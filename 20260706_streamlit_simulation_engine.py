@@ -2,7 +2,7 @@
 Streamlit simulation engine for Chapter 8 liquidity-risk simulations
 ====================================================================
 
-This app consolidates the logic from the attached Chapter 8 scripts:
+Functions:
 - gamma distribution fitting / fallback lognormal parameters;
 - direct and indirect network-liquidity routing-capacity simulation;
 - estimated-EWI emulator with target recall and precision;
