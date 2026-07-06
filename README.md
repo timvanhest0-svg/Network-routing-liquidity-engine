@@ -2,6 +2,8 @@
 
 Interactive Streamlit app for the Chapter 8 liquidity-risk simulation engine.
 
+https://network-routing-liquidity-engine.streamlit.app/
+
 The app combines:
 
 - gamma-driven network-liquidity simulation;
