@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Network Routing Liquidity Engine"
+authors:
+  - family-names: "van Hest"
+    given-names: "Tim"
+year: 2026
+version: "1.0.0"
+date-released: 2026-07-06
+license: "Apache-2.0"
+url: "https://github.com/timvanhest0-svg/Network-routing-liquidity-engine"
+abstract: "The Network Routing Liquidity Engine is a modular simulation tool for studying how changes in financial network topology affect liquidity-routing capacity, early-warning-indicator-triggered support, dynamic buffers, and central-bank liquidity injections."
+keywords:
+  - systemic liquidity risk
+  - financial networks
+  - routing capacity
+  - early-warning indicators
+  - dynamic buffers
+  - central bank liquidity support
