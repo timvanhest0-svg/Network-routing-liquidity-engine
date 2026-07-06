@@ -18,6 +18,7 @@ streamlit_simulation_engine.py   # Main Streamlit app
 requirements.txt                 # Python dependencies
 .gitignore                       # Files excluded from Git
 README.md                        # Project documentation
+LICENSE                          # Apache 2.0 license
 ```
 
 ## Quick start
@@ -38,7 +39,7 @@ The app can use an uploaded gamma-fit summary CSV with these columns:
 distribution, window, params
 ```
 
-If no file is uploaded, the app uses embedded fallback 2010-2018 lognormal parameters.
+If no file is uploaded, the app uses embedded fallback 2010-2018 lognormal parameters as described in the thesis.
 
 ## Interpretation note
 
