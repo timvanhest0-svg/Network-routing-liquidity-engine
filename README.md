@@ -45,26 +45,3 @@ If no file is uploaded, the app uses embedded fallback 2010-2018 lognormal param
 
 The policy channel is implemented as additional routing-capacity support after an estimated-EWI signal. In the current setup, false-positive signals are not directly penalized. Lower precision can therefore improve raw liquidity outcomes because it activates support more often. Efficiency metrics should be read together with raw risk-reduction outcomes.
 
-## Set up Git locally
-
-```bash
-git init
-git add .
-git commit -m "Initial Streamlit liquidity-risk simulation engine"
-git branch -M main
-```
-
-## Push to GitHub
-
-Create an empty GitHub repository first, then run:
-
-```bash
-git remote add origin https://github.com/YOUR-USERNAME/liquidity-risk-simulation-engine.git
-git push -u origin main
-```
-
-If you use the GitHub CLI, you can instead run:
-
-```bash
-gh repo create liquidity-risk-simulation-engine --private --source=. --remote=origin --push
-```
