@@ -12,8 +12,8 @@ This app consolidates the logic from the Chapter 8 simulation scripts:
 Timing interpretation
 ---------------------
 The EWI lead time is implemented as a fixed number of trading days before
-a liquidity-risk event. For example, with a fixed lead time of 5 trading days,
-a true EWI signal for an event on day t is placed on day t - 5.
+a liquidity-risk event. For example, with a fixed lead time of X trading days,
+a true EWI signal for an event on day t is placed on day t - X.
 
 The support-start delay is a separate policy-implementation parameter.
 If an EWI signal occurs on day s, policy support starts on day
@@ -22,6 +22,7 @@ s + support_start_delay and remains active for support_days.
 
 from __future__ import annotations
 
+import html
 import math
 from dataclasses import dataclass
 from io import BytesIO
@@ -192,7 +193,7 @@ def detected_event_mask(
     Mark event days that were preceded by an EWI signal exactly `lead_time`
     trading days earlier.
 
-    If an EWI signal occurs on day t and lead_time = 5, then day t + 5 is
+    If an EWI signal occurs on day t and lead_time = X, then day t + X is
     counted as detected if it is a liquidity-risk day.
 
     The detection is stored on the event day, not on the signal day.
@@ -621,8 +622,8 @@ GLOSSARY_ROWS = [
         "Formula / implementation": "investment",
     },
     {
-        "Term": "Normal buffer / unavailable liquidity/Baseline available liquidity",
-        "Definition": "Percentage of the investment base that is (un)available under normal conditions.",
+        "Term": "Baseline available liquidity",
+        "Definition": "Percentage of the investment base that is (un)available under normal buffer conditions.",
         "Formula / implementation": "baseline_available = investment * (1 - buffer_normal_pct / 100)",
     },
     {
@@ -774,6 +775,148 @@ def glossary_dataframe() -> pd.DataFrame:
     return pd.DataFrame(GLOSSARY_ROWS)
 
 
+def render_wrapped_glossary_table(df: pd.DataFrame, max_height: int = 560):
+    """
+    Render the glossary as a wrapped, screen-friendly HTML table.
+
+    This is more readable than st.dataframe for long text columns because it
+    wraps definitions and formulas instead of forcing horizontal scrolling.
+    """
+    display_df = df[["Term", "Definition", "Formula / implementation"]].fillna("")
+
+    rows_html = []
+
+    for _, row in display_df.iterrows():
+        term = html.escape(str(row["Term"]))
+        definition = html.escape(str(row["Definition"]))
+        formula = html.escape(str(row["Formula / implementation"]))
+
+        rows_html.append(
+            f"""
+            <tr>
+                <td class="term-col">{term}</td>
+                <td class="definition-col">{definition}</td>
+                <td class="formula-col"><code>{formula}</code></td>
+            </tr>
+            """
+        )
+
+    table_html = "\n".join(rows_html)
+
+    st.markdown(
+        f"""
+        <style>
+            .glossary-wrapper {{
+                max-height: {max_height}px;
+                overflow-y: auto;
+                border: 1px solid #e6e6e6;
+                border-radius: 8px;
+                margin-top: 0.5rem;
+            }}
+
+            .glossary-table {{
+                width: 100%;
+                border-collapse: collapse;
+                table-layout: fixed;
+                font-size: 0.88rem;
+                line-height: 1.35;
+            }}
+
+            .glossary-table th {{
+                position: sticky;
+                top: 0;
+                background-color: #f7f7f7;
+                z-index: 1;
+                text-align: left;
+                border-bottom: 1px solid #d9d9d9;
+                padding: 0.55rem;
+            }}
+
+            .glossary-table td {{
+                vertical-align: top;
+                border-bottom: 1px solid #eeeeee;
+                padding: 0.55rem;
+                white-space: normal;
+                word-wrap: break-word;
+                overflow-wrap: break-word;
+            }}
+
+            .term-col {{
+                width: 22%;
+                font-weight: 600;
+            }}
+
+            .definition-col {{
+                width: 48%;
+            }}
+
+            .formula-col {{
+                width: 30%;
+                font-family: monospace;
+                font-size: 0.82rem;
+                background-color: #fbfbfb;
+            }}
+
+            .formula-col code {{
+                white-space: normal;
+                word-break: break-word;
+            }}
+        </style>
+
+        <div class="glossary-wrapper">
+            <table class="glossary-table">
+                <thead>
+                    <tr>
+                        <th class="term-col">Term</th>
+                        <th class="definition-col">Definition</th>
+                        <th class="formula-col">Formula / implementation</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {table_html}
+                </tbody>
+            </table>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_glossary_cards(df: pd.DataFrame):
+    """
+    Render definitions as searchable expanders.
+
+    This is useful when the table becomes too dense on smaller screens.
+    """
+    st.markdown("#### Search definitions")
+
+    search = st.text_input(
+        "Search by term or keyword",
+        value="",
+        placeholder="For example: recall, precision, shortfall, support",
+        label_visibility="collapsed",
+    )
+
+    display_df = df[["Term", "Definition", "Formula / implementation"]].fillna("")
+
+    if search.strip():
+        query = search.strip().lower()
+        mask = (
+            display_df["Term"].str.lower().str.contains(query, regex=False)
+            | display_df["Definition"].str.lower().str.contains(query, regex=False)
+            | display_df["Formula / implementation"].str.lower().str.contains(query, regex=False)
+        )
+        display_df = display_df[mask]
+
+    st.caption(f"Showing {len(display_df)} definition(s).")
+
+    for _, row in display_df.iterrows():
+        with st.expander(str(row["Term"]), expanded=False):
+            st.markdown(f"**Definition**  \n{row['Definition']}")
+            st.markdown("**Formula / implementation**")
+            st.code(str(row["Formula / implementation"]), language="python")
+
+
 # -----------------------------------------------------------------------------
 # Streamlit app
 # -----------------------------------------------------------------------------
@@ -797,9 +940,9 @@ with st.expander("Model definitions and timing interpretation", expanded=False):
         This app separates the **warning system** from the **policy response**.
 
         - The **fixed EWI lead time** determines when a valid warning signal is placed before a liquidity-risk event.  
-          For example, with a lead time of 5 trading days, an event on day *t* has a true signal on day *t - 5*.
+          For example, with a lead time of X trading days, an event on day *t* has a true signal on day *t - X*.
         - The **support-start delay** determines when policy support becomes active after an EWI signal.  
-          If the support-start delay is also 5, support starts on the expected event day.
+          If the support-start delay is Y trading days, support starts on day *t + Y*.
         - A **liquidity-risk day** is defined using **direct network-liquidity routing capacity**.  
           Indirect routing capacity is shown for comparison but does not trigger the risk indicator in this version.
         - **Recall** is event-based: it measures how many event days are detected.
@@ -925,7 +1068,7 @@ with st.sidebar:
         step=1,
         help=(
             "Number of trading days between a true EWI signal and the liquidity-risk event. "
-            "A value of 5 means the signal is placed five trading days before the event."
+            "A value of X means the signal is placed X trading days before the event."
         ),
     )
 
@@ -1707,11 +1850,23 @@ with definitions_tab:
 
     glossary_df = glossary_dataframe()
 
-    st.dataframe(
-        glossary_df,
-        use_container_width=True,
-        hide_index=True,
+    view_mode = st.radio(
+        "Definition view",
+        options=["Wrapped table", "Searchable cards"],
+        horizontal=True,
+        help=(
+            "Use the wrapped table for an overview. Use searchable cards when you want "
+            "to inspect one definition at a time."
+        ),
     )
+
+    if view_mode == "Wrapped table":
+        render_wrapped_glossary_table(
+            glossary_df,
+            max_height=620,
+        )
+    else:
+        render_glossary_cards(glossary_df)
 
     st.caption(
         "Note: liquidity-risk events, risk-day reductions, and routing shortfalls are "
