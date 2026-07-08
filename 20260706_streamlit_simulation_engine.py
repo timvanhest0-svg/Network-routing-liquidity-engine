@@ -177,7 +177,8 @@ def future_event_mask(event_day: np.ndarray, lead_time: int) -> np.ndarray:
     """
     out = np.zeros_like(event_day, dtype=bool)
 
-    if 0 < lead_time < event_day.shapeout[:, :-lead_time] = event_day[:, lead_time:]
+    if 0 < lead_time < event_day.shape[1]:
+        out[:, :-lead_time] = event_day[:, lead_time:]
 
     return out
 
@@ -198,7 +199,8 @@ def detected_event_mask(
     """
     detected = np.zeros_like(event_day, dtype=bool)
 
-    if 0 < lead_time < event_day.shapedetected[:, lead_time:] = (
+    if 0 < lead_time < event_day.shape[1]:
+        detected[:, lead_time:] = (
             event_day[:, lead_time:] & ewi[:, :-lead_time]
         )
 
@@ -315,7 +317,8 @@ def create_nested_ewi(
     # lead_time trading days later.
     tp_signal = np.zeros_like(event_day, dtype=bool)
 
-    if 0 < lead_time < event_day.shapetp_signal[:, :-lead_time] = (
+    if 0 < lead_time < event_day.shape[1]:
+        tp_signal[:, :-lead_time] = (
             ewi[:, :-lead_time] & event_day[:, lead_time:]
         )
 
