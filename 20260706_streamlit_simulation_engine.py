@@ -3,12 +3,11 @@ Streamlit simulation engine for Chapter 8 liquidity-risk simulations
 ====================================================================
 
 This app consolidates the logic from the Chapter 8 simulation scripts:
-- shifted-lognormal fallback parameters for topology-exponent paths;
+- lognormal (fallback) parameters for topology-exponent paths;
 - direct and indirect network-liquidity routing-capacity simulation;
 - estimated-EWI emulator with target recall and precision;
 - policy support as additional routing capacity;
 - support-sensitivity, network-size efficiency, and EWI-quality tables.
-
 """
 
 from __future__ import annotations
@@ -46,6 +45,7 @@ class SimulationConfig:
     target_precision: float = 0.25
     ewi_lead_window: int = 5
     support_days: int = 10
+    support_start_delay: int = 5
     support_pct: float = 10.0
     lognorm_sigma: float = FALLBACK_LOGNORM_PARAMS[0]
     lognorm_loc: float = FALLBACK_LOGNORM_PARAMS[1]
@@ -104,15 +104,12 @@ def simulate_base_paths(
     lognorm_scale: float,
 ):
     """
-    Simulate shifted-lognormal topology-exponent paths and direct/indirect
+    Simulated lognormal topology-exponent paths and direct/indirect
     network-liquidity routing-capacity paths.
     """
     rng = np.random.default_rng(seed)
 
-    gamma_grid, direct_lm_grid, indirect_lm_grid = make_liquidity_multiplier_grids(
-        n_nodes
-    )
-
+    gamma_grid, direct_lm_grid, indirect_lm_grid = make_liquidity_multiplier_grids(n_nodes)
     gamma_paths = lognorm_loc + rng.lognormal(
         mean=np.log(lognorm_scale),
         sigma=lognorm_sigma,
@@ -149,8 +146,8 @@ def future_event_mask(event_day: np.ndarray, lead_window: int) -> np.ndarray:
     """
     Mark days that are followed by a liquidity-risk day within the lead window.
 
-    This is used to build a cleaner false-positive pool. A false-positive
-    candidate should not be followed by a risk day within the lead window.
+    Used to construct clean false-positive EWI candidates. A false-positive
+    signal should not be followed by a risk day within the lead window.
     """
     out = np.zeros_like(event_day, dtype=bool)
 
@@ -158,6 +155,24 @@ def future_event_mask(event_day: np.ndarray, lead_window: int) -> np.ndarray:
         out[:, :-h] |= event_day[:, h:]
 
     return out
+
+
+def detected_event_mask(
+    event_day: np.ndarray,
+    ewi: np.ndarray,
+    lead_window: int,
+) -> np.ndarray:
+    """
+    Mark event days that were preceded by an EWI signal within the lead window.
+
+    This gives an event-based achieved recall measure.
+    """
+    detected = np.zeros_like(event_day, dtype=bool)
+
+    for h in range(1, lead_window + 1):
+        detected[:, h:] |= event_day[:, h:] & ewi[:, :-h]
+
+    return detected & event_day
 
 
 def build_nested_ewi_design(
@@ -171,6 +186,8 @@ def build_nested_ewi_design(
     The design contains:
     - potential true-signal positions before evaluable event days;
     - false-positive positions not followed by an event within the lead window.
+
+    True EWI signals are only allowed on non-risk days.
     """
     rng = np.random.default_rng(seed)
 
@@ -178,12 +195,14 @@ def build_nested_ewi_design(
     evaluable[:, :lead_window] = False
 
     event_positions = np.argwhere(evaluable)
+
     if len(event_positions) > 0:
         event_positions = event_positions[rng.permutation(len(event_positions))]
 
     future_event = future_event_mask(event_day, lead_window)
 
     false_positive_candidates = np.argwhere(~event_day & ~future_event)
+
     if len(false_positive_candidates) > 0:
         false_positive_candidates = false_positive_candidates[
             rng.permutation(len(false_positive_candidates))
@@ -194,10 +213,15 @@ def build_nested_ewi_design(
     for s, t in event_positions:
         possible_days = np.arange(max(0, t - lead_window), t)
 
+        # An early-warning signal should not be placed on a day that is already
+        # a liquidity-risk day.
+        possible_days = possible_days[~event_day[s, possible_days]]
+
         if len(possible_days) > 0:
             signal_t = int(rng.choice(possible_days))
             true_signal_positions.append((int(s), signal_t))
 
+    # Deduplicate true-signal positions while preserving order.
     seen = set()
     unique_true_signal_positions = []
 
@@ -225,6 +249,10 @@ def create_nested_ewi(
     """
     Create an estimated-EWI signal process matching target recall and precision
     as closely as possible.
+
+    Achieved recall is calculated from actual detected event days:
+    an event day is detected if it was preceded by an EWI signal within the
+    lead window.
     """
     ewi = np.zeros_like(event_day, dtype=bool)
 
@@ -232,8 +260,8 @@ def create_nested_ewi(
     true_positions = design["true_signal_positions"]
     fp_positions = design["false_positive_positions"]
 
-    n_true = int(round(target_recall * n_events)) if n_events else 0
-    n_true = min(n_true, len(true_positions))
+    n_true_target = int(round(target_recall * n_events)) if n_events else 0
+    n_true = min(n_true_target, len(true_positions))
 
     selected_true = true_positions[:n_true]
 
@@ -251,6 +279,9 @@ def create_nested_ewi(
     for s, t in fp_positions[:n_fp]:
         ewi[s, t] = True
 
+    # Signal-level precision:
+    # a signal is true positive if it is followed by a liquidity-risk day
+    # within the lead window.
     tp_signal = np.zeros_like(event_day, dtype=bool)
 
     for s, t in np.argwhere(ewi):
@@ -261,13 +292,27 @@ def create_nested_ewi(
     true_positive_signal_days = int(tp_signal.sum())
     false_positive_signal_days = signal_days - true_positive_signal_days
 
+    # Event-level recall:
+    # count actual event days detected by an earlier EWI signal.
+    detected_events = detected_event_mask(event_day, ewi, lead_window)
+
+    evaluable = event_day.copy()
+    evaluable[:, :lead_window] = False
+
+    detected_event_days = int((detected_events & evaluable).sum())
+
     diagnostics = {
         "target_recall": target_recall * 100,
         "target_precision": target_precision * 100,
         "lead_window": lead_window,
         "evaluable_event_days": n_events,
-        "detected_event_days": n_true,
-        "achieved_recall": (n_true / n_events * 100) if n_events else np.nan,
+        "selected_true_signal_days": n_true,
+        "detected_event_days": detected_event_days,
+        "achieved_recall": (
+            detected_event_days / n_events * 100
+            if n_events
+            else np.nan
+        ),
         "signal_days": signal_days,
         "true_positive_signal_days": true_positive_signal_days,
         "false_positive_signal_days": false_positive_signal_days,
@@ -283,19 +328,43 @@ def create_nested_ewi(
     return ewi, diagnostics
 
 
-def forward_active_mask(flags: np.ndarray, duration: int):
-    """Activate policy support for a fixed duration after an EWI signal."""
+def forward_active_mask(
+    flags: np.ndarray,
+    duration: int,
+    start_delay: int,
+):
+    """
+    Activate policy support after an EWI signal for a fixed duration.
+
+    If an EWI signal occurs on day t, support starts on day:
+
+        t + start_delay
+
+    and remains active for `duration` trading days.
+
+    Example:
+    - start_delay = 1 means support starts the next trading day.
+    - start_delay = 5 means support starts five trading days after the signal.
+    """
     if duration <= 0:
         return np.zeros_like(flags, dtype=bool)
 
+    if start_delay < 1:
+        raise ValueError("start_delay must be at least 1 trading day.")
+
     out = np.zeros_like(flags, dtype=bool)
     kernel = np.ones(duration, dtype=int)
+    n_days = flags.shape[1]
 
     for s in range(flags.shape[0]):
-        conv = np.convolve(flags[s].astype(int), kernel, mode="full")[
-            : flags.shape[1]
-        ]
-        out[s] = conv > 0
+        conv = np.convolve(flags[s].astype(int), kernel, mode="full")
+
+        shifted = np.zeros(n_days, dtype=int)
+
+        if start_delay < n_days:
+            shifted[start_delay:] = conv[: n_days - start_delay]
+
+        out[s] = shifted > 0
 
     return out
 
@@ -331,7 +400,7 @@ def run_support_policy(
     support_intensity = (
         support.sum() / (baseline_available * direct_lm.size) * 100
         if baseline_available > 0
-        else 0.0
+        else np.nan
     )
 
     policy_liquidity = (baseline_available + support) * direct_lm
@@ -504,7 +573,7 @@ st.set_page_config(
 st.title("Liquidity-risk routing capacity simulation engine")
 
 st.caption(
-    "Interactive version of the Chapter 8 simulation: shifted-lognormal topology paths, "
+    "Interactive version of the Chapter 8 simulation: PA-model topology paths, "
     "network-liquidity routing capacity, estimated-EWI signals, and routing-capacity "
     "policy support."
 )
@@ -515,7 +584,7 @@ st.caption(
 # -----------------------------------------------------------------------------
 
 with st.sidebar:
-    st.header("1. Simulation settings")
+    st.header("1. Network simulation settings")
 
     n_nodes = st.slider(
         "Network size",
@@ -560,7 +629,7 @@ with st.sidebar:
     buffer_normal_pct = st.slider(
         "Normal buffer / unavailable liquidity (%)",
         min_value=0.0,
-        max_value=100.0,
+        max_value=90.0,
         value=BUFFER_NORMAL_DEFAULT,
         step=10.0,
     )
@@ -601,10 +670,18 @@ with st.sidebar:
     )
 
     support_days = st.slider(
-        "Support duration after EWI",
+        "Support duration after activation",
         min_value=1,
         max_value=60,
         value=10,
+        step=1,
+    )
+
+    support_start_delay = st.slider(
+        "Support start delay after EWI, trading days",
+        min_value=1,
+        max_value=10,
+        value=5,
         step=1,
     )
 
@@ -659,6 +736,7 @@ cfg = SimulationConfig(
     target_precision=float(target_precision),
     ewi_lead_window=int(ewi_lead_window),
     support_days=int(support_days),
+    support_start_delay=int(support_start_delay),
     support_pct=float(support_pct),
     lognorm_sigma=float(lognorm_sigma),
     lognorm_loc=float(lognorm_loc),
@@ -706,6 +784,7 @@ with st.spinner("Running simulation..."):
     active_mask = forward_active_mask(
         ewi_flags,
         cfg.support_days,
+        cfg.support_start_delay,
     )
 
     policy_liquidity, policy_metrics, policy_extra = run_support_policy(
@@ -767,6 +846,10 @@ simulation_summary = pd.DataFrame(
             "Liquidity-risk scenario rate (%)",
             round(base_metrics["risk_scenario_rate"], 4),
         ],
+        ["EWI lead window", cfg.ewi_lead_window],
+        ["Support duration after activation", cfg.support_days],
+        ["Support start delay after EWI", cfg.support_start_delay],
+        ["Support setting (%)", cfg.support_pct],
         ["Lognormal sigma", cfg.lognorm_sigma],
         ["Lognormal location shift", cfg.lognorm_loc],
         ["Lognormal scale", cfg.lognorm_scale],
@@ -782,8 +865,10 @@ ewi_summary = pd.DataFrame(
 policy_summary = pd.DataFrame(
     [
         {
-            "Policy": "No mitigation",
+            "Policy": "Baseline (no support)",
             "Support setting (%)": 0.0,
+            "Support start delay": np.nan,
+            "Support duration": 0,
             "Policy support intensity (%)": 0.0,
             "Liquidity-risk scenario rate (%)": base_metrics["risk_scenario_rate"],
             "Liquidity-risk day rate (%)": base_metrics["risk_day_rate"],
@@ -793,8 +878,10 @@ policy_summary = pd.DataFrame(
             "Mitigation efficiency": np.nan,
         },
         {
-            "Policy": "Routing-capacity support after EWI",
+            "Policy": "Routing-capacity support",
             "Support setting (%)": cfg.support_pct,
+            "Support start delay": cfg.support_start_delay,
+            "Support duration": cfg.support_days,
             "Policy support intensity (%)": policy_extra["support_intensity_pct"],
             "Liquidity-risk scenario rate (%)": policy_metrics[
                 "risk_scenario_rate"
@@ -815,11 +902,11 @@ policy_summary = pd.DataFrame(
 
 fig_tab, policy_tab, sensitivity_tab, network_tab, ewi_tab, downloads_tab = st.tabs(
     [
-        "Liquidity paths",
+        "Liquidity routing paths",
         "Policy result",
-        "Support sensitivity",
-        "Network-size efficiency",
-        "EWI quality",
+        "Routing support efficacy",
+        "Impact of Network-size",
+        "Routing capacity EWI quality",
         "Downloads",
     ]
 )
@@ -919,6 +1006,15 @@ with fig_tab:
     fig.tight_layout()
     st.pyplot(fig)
 
+    st.caption(
+        "Note: the y-axis starts at the selected investment base."
+        "Average direct and indirect network liquidity routing are calculate over all simulated paths." 
+        "The direct and indirect liquidity-risk routing threshold is set at the 2.5th percentile level over the simulated paths."
+        "A routing risk day occurs when the direct or indirect routing capacity falls below the threshold."
+        "A routing risk scenario occurs when at least one risk day occurs in a simulated path."
+        "The total routing shortfall is the cumulative amount by which the routing capacity falls below the threshold over all risk days."
+    )
+
     liquidity_paths_png = fig_to_png_bytes(fig)
 
 
@@ -944,15 +1040,15 @@ with policy_tab:
         plot_df["Liquidity-risk scenario rate (%)"],
         color=colors,
     )
-    axes[0].set_title("A. Scenario rate")
-    axes[0].set_ylabel("% of scenarios")
+    axes[0].set_title("A. Routing risk scenario rate")
+    axes[0].set_ylabel("% of simualted paths")
 
     axes[1].bar(
         plot_df["Policy"],
         plot_df["Liquidity-risk day rate (%)"],
         color=colors,
     )
-    axes[1].set_title("B. Risk-day rate")
+    axes[1].set_title("B. Routing risk-day rate")
     axes[1].set_ylabel("% of trading days")
 
     denom = plot_df.loc[0, "Total routing shortfall"]
@@ -1009,6 +1105,8 @@ with sensitivity_tab:
             rows.append(
                 {
                     "Support setting (%)": sp,
+                    "Support start delay": cfg.support_start_delay,
+                    "Support duration": cfg.support_days,
                     "Policy support intensity (%)": 0.0,
                     "Risk-day reduction (%)": 0.0,
                     "Shortfall reduction (%)": 0.0,
@@ -1029,6 +1127,8 @@ with sensitivity_tab:
             rows.append(
                 {
                     "Support setting (%)": sp,
+                    "Support start delay": cfg.support_start_delay,
+                    "Support duration": cfg.support_days,
                     "Policy support intensity (%)": extra[
                         "support_intensity_pct"
                     ],
@@ -1086,8 +1186,12 @@ with network_tab:
     st.subheader("Mitigation efficiency over network size")
 
     st.caption(
-        "Uses the current EWI settings and support-duration setting across "
-        "a compact default grid."
+        "Uses the current EWI settings, support-duration setting, and "
+        "support-start-delay setting across a compact default grid."
+    )
+
+    st.caption(
+        "Network-size comparisons use the same random seed across sizes to improve comparability."
     )
 
     network_grid = list(range(20, 101, 10))
@@ -1130,6 +1234,7 @@ with network_tab:
         active_n = forward_active_mask(
             ewi_n,
             cfg.support_days,
+            cfg.support_start_delay,
         )
 
         for sp in support_levels:
@@ -1147,6 +1252,8 @@ with network_tab:
                 {
                     "Network size": n,
                     "Support setting (%)": sp,
+                    "Support start delay": cfg.support_start_delay,
+                    "Support duration": cfg.support_days,
                     "Policy support intensity (%)": extra[
                         "support_intensity_pct"
                     ],
@@ -1219,6 +1326,7 @@ with ewi_tab:
         active_q = forward_active_mask(
             ewi_q,
             cfg.support_days,
+            cfg.support_start_delay,
         )
 
         _, pm_q, extra_q = run_support_policy(
@@ -1240,6 +1348,8 @@ with ewi_tab:
                 "Achieved precision (%)": diag_q["achieved_precision"],
                 "Signal-day rate (%)": diag_q["signal_day_rate"],
                 "Support setting (%)": 10.0,
+                "Support start delay": cfg.support_start_delay,
+                "Support duration": cfg.support_days,
                 "Policy support intensity (%)": extra_q[
                     "support_intensity_pct"
                 ],
@@ -1427,6 +1537,8 @@ with downloads_tab:
 
 st.info(
     "Interpretation note: the policy channel is implemented as additional "
-    "routing-capacity support after an estimated-EWI signal. The topology "
-    "exponent paths are drawn from fallback shifted-lognormal parameters."
+    "routing-capacity support after an estimated-EWI signal. Policy support starts "
+    f"{cfg.support_start_delay} trading day(s) after the signal and remains active "
+    f"for {cfg.support_days} trading day(s). The topology exponent paths are drawn "
+    "from fallback shifted-lognormal parameters."
 )
