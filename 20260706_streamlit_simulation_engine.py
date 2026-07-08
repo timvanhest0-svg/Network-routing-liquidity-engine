@@ -16,6 +16,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from io import BytesIO
+from zipfile import ZipFile
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -27,7 +28,7 @@ import streamlit as st
 # Defaults calibrated to the Chapter 8 scripts
 # -----------------------------------------------------------------------------
 
-FALLBACK_LOGNORM_PARAMS = (0.3190514240176254, 0.0, 1.0899155671153902)
+FALLBACK_LOGNORM_PARAMS = (0.3191, 0.0, 1.0899)
 INVESTMENT_DEFAULT = 100.0
 BUFFER_NORMAL_DEFAULT = 40.0
 
@@ -197,9 +198,6 @@ def build_nested_ewi_design(
             signal_t = int(rng.choice(possible_days))
             true_signal_positions.append((int(s), signal_t))
 
-    # Deduplicate true-signal positions while preserving order.
-    # This prevents several nearby events from being assigned to the same
-    # boolean EWI signal day and counted multiple times.
     seen = set()
     unique_true_signal_positions = []
 
@@ -253,8 +251,6 @@ def create_nested_ewi(
     for s, t in fp_positions[:n_fp]:
         ewi[s, t] = True
 
-    # A signal is a true positive if it is followed by a liquidity-risk day
-    # within the lead window.
     tp_signal = np.zeros_like(event_day, dtype=bool)
 
     for s, t in np.argwhere(ewi):
@@ -386,6 +382,117 @@ def to_excel_download(sheets: dict) -> bytes:
 
 
 # -----------------------------------------------------------------------------
+# Downloads figures and tables
+# -----------------------------------------------------------------------------
+
+def fig_to_png_bytes(fig, dpi: int = 300) -> bytes:
+    """Convert a Matplotlib figure to PNG bytes."""
+    output = BytesIO()
+
+    fig.savefig(
+        output,
+        format="png",
+        dpi=dpi,
+        bbox_inches="tight",
+        facecolor="white",
+    )
+
+    output.seek(0)
+    return output.getvalue()
+
+
+def format_value_for_table_png(value):
+    """Format table values for PNG export."""
+    if pd.isna(value):
+        return ""
+
+    if isinstance(value, (int, np.integer)):
+        return str(value)
+
+    if isinstance(value, (float, np.floating)):
+        return f"{value:.3f}"
+
+    return str(value)
+
+
+def dataframe_to_png_bytes(
+    df: pd.DataFrame,
+    title: str,
+    dpi: int = 300,
+    font_size: int = 8,
+) -> bytes:
+    """Convert a DataFrame to a PNG table image."""
+    table_df = df.copy()
+
+    formatted_df = table_df.astype(object).apply(
+        lambda col: col.map(format_value_for_table_png)
+    )
+
+    n_rows, n_cols = formatted_df.shape
+
+    fig_width = max(8.0, min(26.0, n_cols * 1.8))
+    fig_height = max(2.5, min(34.0, n_rows * 0.38 + 1.4))
+
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+    ax.axis("off")
+
+    ax.set_title(
+        title,
+        fontsize=12,
+        fontweight="bold",
+        pad=12,
+    )
+
+    table = ax.table(
+        cellText=formatted_df.values,
+        colLabels=formatted_df.columns,
+        cellLoc="center",
+        colLoc="center",
+        loc="center",
+    )
+
+    table.auto_set_font_size(False)
+    table.set_fontsize(font_size)
+    table.scale(1.0, 1.25)
+
+    for (row, col), cell in table.get_celld().items():
+        cell.set_edgecolor("#cccccc")
+
+        if row == 0:
+            cell.set_facecolor("#f0f0f0")
+            cell.set_text_props(weight="bold")
+
+    fig.tight_layout()
+
+    output = BytesIO()
+
+    fig.savefig(
+        output,
+        format="png",
+        dpi=dpi,
+        bbox_inches="tight",
+        facecolor="white",
+    )
+
+    plt.close(fig)
+
+    output.seek(0)
+    return output.getvalue()
+
+
+def png_zip_download(png_files: dict) -> bytes:
+    """Bundle PNG files into a single ZIP archive."""
+    output = BytesIO()
+
+    with ZipFile(output, "w") as zip_file:
+        for file_name, png_bytes in png_files.items():
+            zip_file.writestr(file_name, png_bytes)
+
+    output.seek(0)
+    return output.getvalue()
+
+
+# -----------------------------------------------------------------------------
 # Streamlit app
 # -----------------------------------------------------------------------------
 
@@ -453,9 +560,9 @@ with st.sidebar:
     buffer_normal_pct = st.slider(
         "Normal buffer / unavailable liquidity (%)",
         min_value=0.0,
-        max_value=90.0,
+        max_value=100.0,
         value=BUFFER_NORMAL_DEFAULT,
-        step=1.0,
+        step=10.0,
     )
 
     liquidity_risk_q = st.slider(
@@ -471,7 +578,7 @@ with st.sidebar:
 
     target_recall = st.slider(
         "Target EWI recall",
-        min_value=0.0,
+        min_value=0.5,
         max_value=1.0,
         value=0.70,
         step=0.05,
@@ -504,7 +611,7 @@ with st.sidebar:
     support_pct = st.slider(
         "Additional routing-capacity support (%)",
         min_value=0.0,
-        max_value=50.0,
+        max_value=100.0,
         value=10.0,
         step=1.0,
     )
@@ -624,7 +731,7 @@ col1.metric(
 )
 
 col2.metric(
-    "Baseline risk-day rate",
+    "Baseline routing risk-day rate",
     f"{base_metrics['risk_day_rate']:.2f}%",
 )
 
@@ -634,7 +741,7 @@ col3.metric(
 )
 
 col4.metric(
-    "Shortfall reduction",
+    "Routing shortfall reduction",
     f"{policy_extra['shortfall_reduction_pct']:.2f}%",
 )
 
@@ -794,9 +901,9 @@ with fig_tab:
         )
 
         y_upper = math.ceil((y_max * 1.05) / 100) * 100
+        min_y_upper = math.ceil((cfg.investment * 1.05) / 100) * 100
+        y_upper = max(y_upper, min_y_upper)
 
-        # User-requested behaviour:
-        # start the y-axis at the selected investment amount.
         ax.set_ylim(cfg.investment, y_upper)
 
         ax.set_title(title)
@@ -811,6 +918,8 @@ with fig_tab:
 
     fig.tight_layout()
     st.pyplot(fig)
+
+    liquidity_paths_png = fig_to_png_bytes(fig)
 
 
 # -----------------------------------------------------------------------------
@@ -877,6 +986,13 @@ with policy_tab:
     st.pyplot(fig)
     st.dataframe(policy_summary.round(3), use_container_width=True)
 
+    policy_comparison_png = fig_to_png_bytes(fig)
+
+    policy_summary_png = dataframe_to_png_bytes(
+        policy_summary.round(3),
+        title="Policy summary",
+    )
+
 
 # -----------------------------------------------------------------------------
 # Support sensitivity tab
@@ -920,9 +1036,7 @@ with sensitivity_tab:
                     "Shortfall reduction (%)": extra[
                         "shortfall_reduction_pct"
                     ],
-                    "Mitigation efficiency": extra[
-                        "mitigation_efficiency"
-                    ],
+                    "Mitigation efficiency": extra["mitigation_efficiency"],
                 }
             )
 
@@ -947,11 +1061,21 @@ with sensitivity_tab:
     ax.set_xlabel("Additional routing-capacity support (%)")
     ax.set_ylabel("Reduction relative to no mitigation (%)")
     ax.set_ylim(0, 100)
+    ax.set_xlim(0, max(support_grid))
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend()
 
+    fig.tight_layout()
+
     st.pyplot(fig)
     st.dataframe(support_df.round(3), use_container_width=True)
+
+    support_sensitivity_png = fig_to_png_bytes(fig)
+
+    support_sensitivity_table_png = dataframe_to_png_bytes(
+        support_df.round(3),
+        title="Support sensitivity",
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -1029,9 +1153,7 @@ with network_tab:
                     "Shortfall reduction (%)": extra[
                         "shortfall_reduction_pct"
                     ],
-                    "Mitigation efficiency": extra[
-                        "mitigation_efficiency"
-                    ],
+                    "Mitigation efficiency": extra["mitigation_efficiency"],
                 }
             )
 
@@ -1051,11 +1173,21 @@ with network_tab:
 
     ax.set_xlabel("Network size")
     ax.set_ylabel("Shortfall reduction per 1% support intensity")
+    ax.set_xlim(min(network_grid), max(network_grid))
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend()
 
+    fig.tight_layout()
+
     st.pyplot(fig)
     st.dataframe(network_df.round(3), use_container_width=True)
+
+    network_efficiency_png = fig_to_png_bytes(fig)
+
+    network_efficiency_table_png = dataframe_to_png_bytes(
+        network_df.round(3),
+        title="Network-size efficiency",
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -1113,12 +1245,8 @@ with ewi_tab:
                 ],
                 "Policy risk-day rate (%)": pm_q["risk_day_rate"],
                 "Risk-day reduction (%)": extra_q["risk_reduction_pct"],
-                "Shortfall reduction (%)": extra_q[
-                    "shortfall_reduction_pct"
-                ],
-                "Mitigation efficiency": extra_q[
-                    "mitigation_efficiency"
-                ],
+                "Shortfall reduction (%)": extra_q["shortfall_reduction_pct"],
+                "Mitigation efficiency": extra_q["mitigation_efficiency"],
             }
         )
 
@@ -1128,6 +1256,16 @@ with ewi_tab:
 
     st.subheader("Current EWI diagnostics")
     st.dataframe(ewi_summary.round(3), use_container_width=True)
+
+    ewi_quality_table_png = dataframe_to_png_bytes(
+        ewi_quality_df.round(3),
+        title="EWI-quality impact under fixed 10% support",
+    )
+
+    ewi_summary_png = dataframe_to_png_bytes(
+        ewi_summary.round(3),
+        title="Current EWI diagnostics",
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -1141,6 +1279,9 @@ with downloads_tab:
         "Simulation summary": simulation_summary,
         "EWI summary": ewi_summary,
         "Policy summary": policy_summary,
+        "Support sensitivity": support_df,
+        "Network efficiency": network_df,
+        "EWI quality": ewi_quality_df,
     }
 
     excel_bytes = to_excel_download(all_outputs)
@@ -1167,6 +1308,120 @@ with downloads_tab:
         data=simulation_summary.to_csv(index=False).encode("utf-8"),
         file_name="simulation_summary.csv",
         mime="text/csv",
+    )
+
+    st.download_button(
+        "Download support sensitivity (.csv)",
+        data=support_df.to_csv(index=False).encode("utf-8"),
+        file_name="support_sensitivity.csv",
+        mime="text/csv",
+    )
+
+    st.download_button(
+        "Download network efficiency (.csv)",
+        data=network_df.to_csv(index=False).encode("utf-8"),
+        file_name="network_size_efficiency.csv",
+        mime="text/csv",
+    )
+
+    st.download_button(
+        "Download EWI quality (.csv)",
+        data=ewi_quality_df.to_csv(index=False).encode("utf-8"),
+        file_name="ewi_quality.csv",
+        mime="text/csv",
+    )
+
+    st.divider()
+
+    st.subheader("Download figures and tables as PNG")
+
+    png_files = {
+        "liquidity_paths.png": liquidity_paths_png,
+        "policy_comparison.png": policy_comparison_png,
+        "policy_summary_table.png": policy_summary_png,
+        "support_sensitivity.png": support_sensitivity_png,
+        "support_sensitivity_table.png": support_sensitivity_table_png,
+        "network_size_efficiency.png": network_efficiency_png,
+        "network_size_efficiency_table.png": network_efficiency_table_png,
+        "ewi_quality_table.png": ewi_quality_table_png,
+        "ewi_summary_table.png": ewi_summary_png,
+    }
+
+    col_a, col_b, col_c = st.columns(3)
+
+    with col_a:
+        st.download_button(
+            "Download liquidity paths PNG",
+            data=liquidity_paths_png,
+            file_name="liquidity_paths.png",
+            mime="image/png",
+        )
+
+        st.download_button(
+            "Download policy comparison PNG",
+            data=policy_comparison_png,
+            file_name="policy_comparison.png",
+            mime="image/png",
+        )
+
+        st.download_button(
+            "Download support sensitivity PNG",
+            data=support_sensitivity_png,
+            file_name="support_sensitivity.png",
+            mime="image/png",
+        )
+
+    with col_b:
+        st.download_button(
+            "Download network efficiency PNG",
+            data=network_efficiency_png,
+            file_name="network_size_efficiency.png",
+            mime="image/png",
+        )
+
+        st.download_button(
+            "Download policy summary table PNG",
+            data=policy_summary_png,
+            file_name="policy_summary_table.png",
+            mime="image/png",
+        )
+
+        st.download_button(
+            "Download support table PNG",
+            data=support_sensitivity_table_png,
+            file_name="support_sensitivity_table.png",
+            mime="image/png",
+        )
+
+    with col_c:
+        st.download_button(
+            "Download network table PNG",
+            data=network_efficiency_table_png,
+            file_name="network_size_efficiency_table.png",
+            mime="image/png",
+        )
+
+        st.download_button(
+            "Download EWI-quality table PNG",
+            data=ewi_quality_table_png,
+            file_name="ewi_quality_table.png",
+            mime="image/png",
+        )
+
+        st.download_button(
+            "Download EWI diagnostics table PNG",
+            data=ewi_summary_png,
+            file_name="ewi_summary_table.png",
+            mime="image/png",
+        )
+
+    all_png_zip = png_zip_download(png_files)
+
+    st.download_button(
+        "Download all PNG outputs as ZIP",
+        data=all_png_zip,
+        file_name="streamlit_simulation_engine_png_outputs.zip",
+        mime="application/zip",
     )
 
 
