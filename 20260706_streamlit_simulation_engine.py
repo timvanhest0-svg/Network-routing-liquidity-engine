@@ -1,13 +1,23 @@
 """
-Streamlit simulation engine for Chapter 8 liquidity-risk simulations
+Streamlit simulation engine for Chapter 8 routing liquidity-risk simulations
 ====================================================================
 
 This app consolidates the logic from the Chapter 8 simulation scripts:
-- lognormal (fallback) parameters for topology-exponent paths;
+- lognormal fallback parameters for topology-exponent paths;
 - direct and indirect network-liquidity routing-capacity simulation;
 - estimated-EWI emulator with target recall and precision;
-- policy support as additional routing capacity;
+- routing-capacity policy support after EWI signals;
 - support-sensitivity, network-size efficiency, and EWI-quality tables.
+
+Timing interpretation
+---------------------
+The EWI lead time is implemented as a fixed number of trading days before
+a liquidity-risk event. For example, with a fixed lead time of 5 trading days,
+a true EWI signal for an event on day t is placed on day t - 5.
+
+The support-start delay is a separate policy-implementation parameter.
+If an EWI signal occurs on day s, policy support starts on day
+s + support_start_delay and remains active for support_days.
 """
 
 from __future__ import annotations
@@ -43,7 +53,7 @@ class SimulationConfig:
     seed: int = 42
     target_recall: float = 0.70
     target_precision: float = 0.25
-    ewi_lead_window: int = 5
+    ewi_lead_time: int = 5
     support_days: int = 10
     support_start_delay: int = 5
     support_pct: float = 10.0
@@ -53,7 +63,7 @@ class SimulationConfig:
 
 
 # -----------------------------------------------------------------------------
-# Utility functions
+# Liquidity-multiplier and simulation functions
 # -----------------------------------------------------------------------------
 
 @st.cache_data(show_spinner=False)
@@ -66,6 +76,9 @@ def make_liquidity_multiplier_grids(n_nodes: int, grid_size: int = 5000):
 
     Indirect multiplier:
         E[k^2] / E[k] - 1
+
+    The variable `gamma` is the topology-exponent parameter used to weight
+    the degree distribution.
     """
     degree = np.arange(1, n_nodes + 1, dtype=float)
     gamma_grid = np.linspace(0.01, 20.0, grid_size)
@@ -104,12 +117,19 @@ def simulate_base_paths(
     lognorm_scale: float,
 ):
     """
-    Simulated lognormal topology-exponent paths and direct/indirect
+    Simulate lognormal topology-exponent paths and direct/indirect
     network-liquidity routing-capacity paths.
+
+    Liquidity-risk events are defined using direct routing capacity only.
+    The indirect series is shown for comparison but does not trigger the
+    risk indicator in this version.
     """
     rng = np.random.default_rng(seed)
 
-    gamma_grid, direct_lm_grid, indirect_lm_grid = make_liquidity_multiplier_grids(n_nodes)
+    gamma_grid, direct_lm_grid, indirect_lm_grid = make_liquidity_multiplier_grids(
+        n_nodes
+    )
+
     gamma_paths = lognorm_loc + rng.lognormal(
         mean=np.log(lognorm_scale),
         sigma=lognorm_sigma,
@@ -142,17 +162,22 @@ def simulate_base_paths(
     }
 
 
-def future_event_mask(event_day: np.ndarray, lead_window: int) -> np.ndarray:
-    """
-    Mark days that are followed by a liquidity-risk day within the lead window.
+# -----------------------------------------------------------------------------
+# EWI design and diagnostics
+# -----------------------------------------------------------------------------
 
-    Used to construct clean false-positive EWI candidates. A false-positive
-    signal should not be followed by a risk day within the lead window.
+def future_event_mask(event_day: np.ndarray, lead_time: int) -> np.ndarray:
+    """
+    Mark days that are exactly `lead_time` trading days before a liquidity-risk day.
+
+    If event_day[s, t] is True and lead_time = 5, then the pre-event mask is
+    True at day t - 5, provided that t - 5 is within the sample.
+
+    This implements the Chapter 7 fixed-lead-time interpretation.
     """
     out = np.zeros_like(event_day, dtype=bool)
 
-    for h in range(1, lead_window + 1):
-        out[:, :-h] |= event_day[:, h:]
+    if 0 < lead_time < event_day.shapeout[:, :-lead_time] = event_day[:, lead_time:]
 
     return out
 
@@ -160,48 +185,54 @@ def future_event_mask(event_day: np.ndarray, lead_window: int) -> np.ndarray:
 def detected_event_mask(
     event_day: np.ndarray,
     ewi: np.ndarray,
-    lead_window: int,
+    lead_time: int,
 ) -> np.ndarray:
     """
-    Mark event days that were preceded by an EWI signal within the lead window.
+    Mark event days that were preceded by an EWI signal exactly `lead_time`
+    trading days earlier.
 
-    This gives an event-based achieved recall measure.
+    If an EWI signal occurs on day t and lead_time = 5, then day t + 5 is
+    counted as detected if it is a liquidity-risk day.
+
+    The detection is stored on the event day, not on the signal day.
     """
     detected = np.zeros_like(event_day, dtype=bool)
 
-    for h in range(1, lead_window + 1):
-        detected[:, h:] |= event_day[:, h:] & ewi[:, :-h]
+    if 0 < lead_time < event_day.shapedetected[:, lead_time:] = (
+            event_day[:, lead_time:] & ewi[:, :-lead_time]
+        )
 
-    return detected & event_day
+    return detected
 
 
 def build_nested_ewi_design(
     event_day: np.ndarray,
-    lead_window: int = 5,
+    lead_time: int = 5,
     seed: int = 42,
 ):
     """
     Create EWI scenario-design positions.
 
-    The design contains:
-    - potential true-signal positions before evaluable event days;
-    - false-positive positions not followed by an event within the lead window.
+    True EWI signals are placed exactly `lead_time` trading days before
+    evaluable liquidity-risk events. False-positive candidates are days that
+    are not liquidity-risk days and are not exactly lead_time days before a
+    liquidity-risk event.
 
     True EWI signals are only allowed on non-risk days.
     """
     rng = np.random.default_rng(seed)
 
     evaluable = event_day.copy()
-    evaluable[:, :lead_window] = False
+    evaluable[:, :lead_time] = False
 
     event_positions = np.argwhere(evaluable)
 
     if len(event_positions) > 0:
         event_positions = event_positions[rng.permutation(len(event_positions))]
 
-    future_event = future_event_mask(event_day, lead_window)
+    exact_pre_event = future_event_mask(event_day, lead_time)
 
-    false_positive_candidates = np.argwhere(~event_day & ~future_event)
+    false_positive_candidates = np.argwhere(~event_day & ~exact_pre_event)
 
     if len(false_positive_candidates) > 0:
         false_positive_candidates = false_positive_candidates[
@@ -209,19 +240,17 @@ def build_nested_ewi_design(
         ]
 
     true_signal_positions = []
+    signalable_event_count = 0
 
     for s, t in event_positions:
-        possible_days = np.arange(max(0, t - lead_window), t)
+        signal_t = int(t - lead_time)
 
-        # An early-warning signal should not be placed on a day that is already
-        # a liquidity-risk day.
-        possible_days = possible_days[~event_day[s, possible_days]]
-
-        if len(possible_days) > 0:
-            signal_t = int(rng.choice(possible_days))
+        if signal_t >= 0 and not event_day[s, signal_t]:
+            signalable_event_count += 1
             true_signal_positions.append((int(s), signal_t))
 
     # Deduplicate true-signal positions while preserving order.
+    # This matters when clustered events map to the same signal day.
     seen = set()
     unique_true_signal_positions = []
 
@@ -232,6 +261,7 @@ def build_nested_ewi_design(
 
     return {
         "n_evaluable_events": int(len(event_positions)),
+        "n_signalable_events": int(signalable_event_count),
         "true_signal_positions": unique_true_signal_positions,
         "false_positive_positions": [
             (int(s), int(t)) for s, t in false_positive_candidates
@@ -244,19 +274,20 @@ def create_nested_ewi(
     design: dict,
     target_recall: float,
     target_precision: float,
-    lead_window: int = 5,
+    lead_time: int = 5,
 ):
     """
     Create an estimated-EWI signal process matching target recall and precision
     as closely as possible.
 
-    Achieved recall is calculated from actual detected event days:
-    an event day is detected if it was preceded by an EWI signal within the
-    lead window.
+    Under the fixed-lead-time interpretation, a signal is a true positive only
+    if a liquidity-risk event occurs exactly `lead_time` trading days later.
     """
     ewi = np.zeros_like(event_day, dtype=bool)
 
     n_events = design["n_evaluable_events"]
+    n_signalable_events = design.get("n_signalable_events", n_events)
+
     true_positions = design["true_signal_positions"]
     fp_positions = design["false_positive_positions"]
 
@@ -280,37 +311,43 @@ def create_nested_ewi(
         ewi[s, t] = True
 
     # Signal-level precision:
-    # a signal is true positive if it is followed by a liquidity-risk day
-    # within the lead window.
+    # a signal is true positive only if a liquidity-risk event occurs exactly
+    # lead_time trading days later.
     tp_signal = np.zeros_like(event_day, dtype=bool)
 
-    for s, t in np.argwhere(ewi):
-        future = event_day[s, t + 1 : t + 1 + lead_window]
-        tp_signal[s, t] = bool(future.any())
+    if 0 < lead_time < event_day.shapetp_signal[:, :-lead_time] = (
+            ewi[:, :-lead_time] & event_day[:, lead_time:]
+        )
 
     signal_days = int(ewi.sum())
     true_positive_signal_days = int(tp_signal.sum())
     false_positive_signal_days = signal_days - true_positive_signal_days
 
     # Event-level recall:
-    # count actual event days detected by an earlier EWI signal.
-    detected_events = detected_event_mask(event_day, ewi, lead_window)
+    # count actual event days detected by a signal exactly lead_time days earlier.
+    detected_events = detected_event_mask(event_day, ewi, lead_time)
 
     evaluable = event_day.copy()
-    evaluable[:, :lead_window] = False
+    evaluable[:, :lead_time] = False
 
     detected_event_days = int((detected_events & evaluable).sum())
 
     diagnostics = {
         "target_recall": target_recall * 100,
         "target_precision": target_precision * 100,
-        "lead_window": lead_window,
+        "fixed_lead_time_days": lead_time,
         "evaluable_event_days": n_events,
+        "signalable_event_days": n_signalable_events,
         "selected_true_signal_days": n_true,
         "detected_event_days": detected_event_days,
         "achieved_recall": (
             detected_event_days / n_events * 100
             if n_events
+            else np.nan
+        ),
+        "achieved_recall_signalable_events": (
+            detected_event_days / n_signalable_events * 100
+            if n_signalable_events
             else np.nan
         ),
         "signal_days": signal_days,
@@ -328,6 +365,10 @@ def create_nested_ewi(
     return ewi, diagnostics
 
 
+# -----------------------------------------------------------------------------
+# Policy support and liquidity evaluation
+# -----------------------------------------------------------------------------
+
 def forward_active_mask(
     flags: np.ndarray,
     duration: int,
@@ -342,7 +383,7 @@ def forward_active_mask(
 
     and remains active for `duration` trading days.
 
-    Example:
+    Examples:
     - start_delay = 1 means support starts the next trading day.
     - start_delay = 5 means support starts five trading days after the signal.
     """
@@ -392,7 +433,12 @@ def run_support_policy(
     buffer_normal_pct: float,
     support_pct: float,
 ):
-    """Apply additional routing-capacity support and calculate policy metrics."""
+    """
+    Apply additional routing-capacity support and calculate policy metrics.
+
+    The policy is evaluated on direct routing capacity, consistent with the
+    risk-event definition.
+    """
     baseline_available = investment * (1.0 - buffer_normal_pct / 100.0)
 
     support = investment * (support_pct / 100.0) * active_mask
@@ -438,6 +484,10 @@ def run_support_policy(
     return policy_liquidity, policy_metrics, extra
 
 
+# -----------------------------------------------------------------------------
+# Download helpers
+# -----------------------------------------------------------------------------
+
 def to_excel_download(sheets: dict) -> bytes:
     """Convert a dictionary of DataFrames to an Excel workbook in memory."""
     output = BytesIO()
@@ -449,10 +499,6 @@ def to_excel_download(sheets: dict) -> bytes:
 
     return output.getvalue()
 
-
-# -----------------------------------------------------------------------------
-# Downloads figures and tables
-# -----------------------------------------------------------------------------
 
 def fig_to_png_bytes(fig, dpi: int = 300) -> bytes:
     """Convert a Matplotlib figure to PNG bytes."""
@@ -562,6 +608,170 @@ def png_zip_download(png_files: dict) -> bytes:
 
 
 # -----------------------------------------------------------------------------
+# Model definitions and interpretation
+# -----------------------------------------------------------------------------
+
+GLOSSARY_ROWS = [
+    {
+        "Term": "Investment base",
+        "Definition": "Reference amount used to scale available routing capacity and policy support.",
+        "Formula / implementation": "investment",
+    },
+    {
+        "Term": "Normal buffer / unavailable liquidity/Baseline available liquidity",
+        "Definition": "Percentage of the investment base that is (un)available under normal conditions.",
+        "Formula / implementation": "baseline_available = investment * (1 - buffer_normal_pct / 100)",
+    },
+    {
+        "Term": "Direct routing capacity",
+        "Definition": "Network-liquidity capacity based on the expected degree multiplier E[k]. This measure defines liquidity-risk events.",
+        "Formula / implementation": "direct_liquidity = baseline_available * direct_lm",
+    },
+    {
+        "Term": "Indirect routing capacity",
+        "Definition": (
+            "Network-liquidity capacity based on the indirect multiplier E[k^2] / E[k] - 1. "
+            "It is shown for comparison but does not trigger liquidity-risk events in this version."
+        ),
+        "Formula / implementation": "indirect_liquidity = baseline_available * indirect_lm",
+    },
+    {
+        "Term": "Liquidity-risk threshold",
+        "Definition": "Lower-tail threshold used to identify direct-capacity liquidity-risk days.",
+        "Formula / implementation": "nanquantile(direct_liquidity, liquidity_risk_q)",
+    },
+    {
+        "Term": "Liquidity-risk day",
+        "Definition": "A scenario-day on which direct routing capacity falls below the liquidity-risk threshold.",
+        "Formula / implementation": "direct_liquidity < risk_threshold",
+    },
+    {
+        "Term": "Liquidity-risk scenario",
+        "Definition": "A simulated path with at least one liquidity-risk day.",
+        "Formula / implementation": "risk.any(axis=1)",
+    },
+    {
+        "Term": "Total routing shortfall",
+        "Definition": "Cumulative amount by which direct routing capacity falls below the risk threshold.",
+        "Formula / implementation": "sum(max(0, risk_threshold - direct_liquidity))",
+    },
+    {
+        "Term": "Fixed EWI lead time",
+        "Definition": (
+            "Number of trading days before a liquidity-risk event at which a true EWI signal is placed. "
+            "For example, with a lead time of 5, an event on day t has a signal on day t - 5."
+        ),
+        "Formula / implementation": "signal_day = event_day - ewi_lead_time",
+    },
+    {
+        "Term": "Target recall",
+        "Definition": "Intended percentage of evaluable liquidity-risk event days that receive a true EWI signal.",
+        "Formula / implementation": "round(target_recall * evaluable_event_days)",
+    },
+    {
+        "Term": "Achieved recall",
+        "Definition": (
+            "Actual percentage of evaluable event days detected by an EWI signal exactly "
+            "the fixed lead time earlier."
+        ),
+        "Formula / implementation": "detected_event_days / evaluable_event_days",
+    },
+    {
+        "Term": "Signalable event days",
+        "Definition": (
+            "Event days for which a valid non-risk signal day exists exactly the fixed lead time "
+            "before the event."
+        ),
+        "Formula / implementation": "event day t is signalable if t - lead_time exists and is not already a risk day",
+    },
+    {
+        "Term": "Achieved recall on signalable events",
+        "Definition": (
+            "Detected event days divided by the number of event days that could receive a clean "
+            "fixed-lead signal."
+        ),
+        "Formula / implementation": "detected_event_days / signalable_event_days",
+    },
+    {
+        "Term": "Target precision",
+        "Definition": "Intended percentage of EWI signal days that should be true positives.",
+        "Formula / implementation": "true_positive_signals / total_signals",
+    },
+    {
+        "Term": "Achieved precision",
+        "Definition": (
+            "Actual percentage of EWI signals that are followed by a liquidity-risk event exactly "
+            "the fixed lead time later."
+        ),
+        "Formula / implementation": "true_positive_signal_days / signal_days",
+    },
+    {
+        "Term": "Signal-day rate",
+        "Definition": "Share of all scenario-days on which an EWI signal is active.",
+        "Formula / implementation": "signal_days / total_scenario_days",
+    },
+    {
+        "Term": "False-positive rate",
+        "Definition": (
+            "Share of all scenario-days with an EWI signal that is not followed by a liquidity-risk "
+            "event exactly the fixed lead time later."
+        ),
+        "Formula / implementation": "false_positive_signal_days / total_scenario_days",
+    },
+    {
+        "Term": "Support setting",
+        "Definition": "Additional routing-capacity support expressed as a percentage of the investment base.",
+        "Formula / implementation": "support = investment * support_pct / 100",
+    },
+    {
+        "Term": "Support-start delay",
+        "Definition": "Number of trading days between an EWI signal and the activation of policy support.",
+        "Formula / implementation": "support starts on signal_day + support_start_delay",
+    },
+    {
+        "Term": "Support duration",
+        "Definition": "Number of trading days for which support remains active after activation.",
+        "Formula / implementation": "support remains active for support_days",
+    },
+    {
+        "Term": "Policy support intensity",
+        "Definition": (
+            "Realized policy support relative to baseline available capacity across all scenario-days. "
+            "It accounts for both the support size and how often support is active."
+        ),
+        "Formula / implementation": "support.sum() / (baseline_available * number_of_scenario_days)",
+    },
+    {
+        "Term": "Risk-day reduction",
+        "Definition": (
+            "Percentage reduction in the number of liquidity-risk days relative to the baseline "
+            "no-support case."
+        ),
+        "Formula / implementation": "(baseline_risk_days - policy_risk_days) / baseline_risk_days",
+    },
+    {
+        "Term": "Shortfall reduction",
+        "Definition": (
+            "Percentage reduction in cumulative routing shortfall relative to the baseline no-support case."
+        ),
+        "Formula / implementation": "(baseline_shortfall - policy_shortfall) / baseline_shortfall",
+    },
+    {
+        "Term": "Mitigation efficiency",
+        "Definition": (
+            "Shortfall reduction achieved per one percentage point of realized policy support intensity."
+        ),
+        "Formula / implementation": "shortfall_reduction_pct / support_intensity_pct",
+    },
+]
+
+
+def glossary_dataframe() -> pd.DataFrame:
+    """Return a glossary dataframe for display and download."""
+    return pd.DataFrame(GLOSSARY_ROWS)
+
+
+# -----------------------------------------------------------------------------
 # Streamlit app
 # -----------------------------------------------------------------------------
 
@@ -573,10 +783,33 @@ st.set_page_config(
 st.title("Liquidity-risk routing capacity simulation engine")
 
 st.caption(
-    "Interactive version of the Chapter 8 simulation: PA-model topology paths, "
-    "network-liquidity routing capacity, estimated-EWI signals, and routing-capacity "
-    "policy support."
+    "Interactive version of the Chapter 8 simulation: topology-exponent paths, "
+    "network-liquidity routing capacity, fixed-lead EWI signals, and "
+    "routing-capacity policy support."
 )
+
+with st.expander("Model definitions and timing interpretation", expanded=False):
+    st.markdown(
+        """
+        This app separates the **warning system** from the **policy response**.
+
+        - The **fixed EWI lead time** determines when a valid warning signal is placed before a liquidity-risk event.  
+          For example, with a lead time of 5 trading days, an event on day *t* has a true signal on day *t - 5*.
+        - The **support-start delay** determines when policy support becomes active after an EWI signal.  
+          If the support-start delay is also 5, support starts on the expected event day.
+        - A **liquidity-risk day** is defined using **direct network-liquidity routing capacity**.  
+          Indirect routing capacity is shown for comparison but does not trigger the risk indicator in this version.
+        - **Recall** is event-based: it measures how many event days are detected.
+        - **Precision** is signal-based: it measures how many EWI signals are true positives.
+        - **Mitigation efficiency** measures how much cumulative shortfall reduction is achieved per unit of realized support intensity.
+        """
+    )
+
+    st.dataframe(
+        glossary_dataframe(),
+        use_container_width=True,
+        hide_index=True,
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -592,6 +825,7 @@ with st.sidebar:
         max_value=150,
         value=24,
         step=1,
+        help="Number of nodes in the simulated financial network.",
     )
 
     scenarios = st.number_input(
@@ -600,6 +834,7 @@ with st.sidebar:
         max_value=10000,
         value=1000,
         step=100,
+        help="Number of simulated paths.",
     )
 
     trading_days = st.number_input(
@@ -608,6 +843,7 @@ with st.sidebar:
         max_value=1000,
         value=200,
         step=10,
+        help="Number of trading days per simulated path.",
     )
 
     seed = st.number_input(
@@ -616,6 +852,7 @@ with st.sidebar:
         max_value=999999,
         value=42,
         step=1,
+        help="Seed used for reproducible random simulation draws.",
     )
 
     investment = st.number_input(
@@ -624,6 +861,7 @@ with st.sidebar:
         max_value=10000.0,
         value=INVESTMENT_DEFAULT,
         step=10.0,
+        help="Reference amount used to scale routing capacity and support.",
     )
 
     buffer_normal_pct = st.slider(
@@ -632,6 +870,10 @@ with st.sidebar:
         max_value=90.0,
         value=BUFFER_NORMAL_DEFAULT,
         step=10.0,
+        help=(
+            "Percentage of the investment base that is unavailable under normal conditions. "
+            "The remaining share defines baseline available liquidity."
+        ),
     )
 
     liquidity_risk_q = st.slider(
@@ -641,6 +883,9 @@ with st.sidebar:
         value=0.025,
         step=0.001,
         format="%.3f",
+        help=(
+            "Lower-tail quantile of direct routing capacity used to define liquidity-risk days."
+        ),
     )
 
     st.header("2. EWI and policy settings")
@@ -651,6 +896,10 @@ with st.sidebar:
         max_value=1.0,
         value=0.70,
         step=0.05,
+        help=(
+            "Intended share of evaluable liquidity-risk event days that receive a true EWI signal "
+            "exactly the fixed lead time before the event."
+        ),
     )
 
     target_precision = st.slider(
@@ -659,14 +908,22 @@ with st.sidebar:
         max_value=1.0,
         value=0.25,
         step=0.05,
+        help=(
+            "Intended share of EWI signals that are true positives. A signal is true positive "
+            "only if a liquidity-risk event occurs exactly the fixed lead time later."
+        ),
     )
 
-    ewi_lead_window = st.slider(
-        "EWI lead window, trading days",
+    ewi_lead_time = st.slider(
+        "Fixed EWI lead time before event, trading days",
         min_value=1,
         max_value=30,
         value=5,
         step=1,
+        help=(
+            "Number of trading days between a true EWI signal and the liquidity-risk event. "
+            "A value of 5 means the signal is placed five trading days before the event."
+        ),
     )
 
     support_days = st.slider(
@@ -675,6 +932,7 @@ with st.sidebar:
         max_value=60,
         value=10,
         step=1,
+        help="Number of trading days for which policy support remains active after it starts.",
     )
 
     support_start_delay = st.slider(
@@ -683,6 +941,10 @@ with st.sidebar:
         max_value=10,
         value=5,
         step=1,
+        help=(
+            "Number of trading days between an EWI signal and the start of policy support. "
+            "If this equals the fixed EWI lead time, support starts on the expected event day."
+        ),
     )
 
     support_pct = st.slider(
@@ -691,12 +953,16 @@ with st.sidebar:
         max_value=100.0,
         value=10.0,
         step=1.0,
+        help=(
+            "Additional routing capacity expressed as a percentage of the investment base. "
+            "The realized support intensity also depends on how often support is active."
+        ),
     )
 
     st.header("3. Distribution settings")
 
     st.caption(
-        "Fallback shifted-lognormal parameters used to draw the topology-exponent paths."
+        "Default lognormal distribution parameters used to draw the topology-exponent paths."
     )
 
     lognorm_sigma = st.number_input(
@@ -705,6 +971,7 @@ with st.sidebar:
         max_value=5.0,
         value=FALLBACK_LOGNORM_PARAMS[0],
         step=0.01,
+        help="Volatility parameter of the fallback lognormal topology-exponent distribution.",
     )
 
     lognorm_loc = st.number_input(
@@ -713,6 +980,7 @@ with st.sidebar:
         max_value=10.0,
         value=FALLBACK_LOGNORM_PARAMS[1],
         step=0.01,
+        help="Location shift added to the simulated topology-exponent paths.",
     )
 
     lognorm_scale = st.number_input(
@@ -721,6 +989,7 @@ with st.sidebar:
         max_value=10.0,
         value=FALLBACK_LOGNORM_PARAMS[2],
         step=0.01,
+        help="Scale parameter of the fallback lognormal topology-exponent distribution.",
     )
 
 
@@ -734,7 +1003,7 @@ cfg = SimulationConfig(
     seed=int(seed),
     target_recall=float(target_recall),
     target_precision=float(target_precision),
-    ewi_lead_window=int(ewi_lead_window),
+    ewi_lead_time=int(ewi_lead_time),
     support_days=int(support_days),
     support_start_delay=int(support_start_delay),
     support_pct=float(support_pct),
@@ -742,6 +1011,29 @@ cfg = SimulationConfig(
     lognorm_loc=float(lognorm_loc),
     lognorm_scale=float(lognorm_scale),
 )
+
+
+# -----------------------------------------------------------------------------
+# Timing interpretation
+# -----------------------------------------------------------------------------
+
+if cfg.support_start_delay > cfg.ewi_lead_time:
+    st.warning(
+        "Timing note: the support-start delay is longer than the fixed EWI lead time. "
+        "Policy support starts after the expected liquidity-risk event."
+    )
+
+elif cfg.support_start_delay == cfg.ewi_lead_time:
+    st.caption(
+        "Timing note: support starts on the expected liquidity-risk event day because "
+        "the support-start delay equals the fixed EWI lead time."
+    )
+
+else:
+    st.caption(
+        "Timing note: support starts before the expected liquidity-risk event day because "
+        "the support-start delay is shorter than the fixed EWI lead time."
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -769,7 +1061,7 @@ with st.spinner("Running simulation..."):
 
     design = build_nested_ewi_design(
         sim["event_day"],
-        cfg.ewi_lead_window,
+        cfg.ewi_lead_time,
         cfg.seed,
     )
 
@@ -778,7 +1070,7 @@ with st.spinner("Running simulation..."):
         design,
         cfg.target_recall,
         cfg.target_precision,
-        cfg.ewi_lead_window,
+        cfg.ewi_lead_time,
     )
 
     active_mask = forward_active_mask(
@@ -846,7 +1138,7 @@ simulation_summary = pd.DataFrame(
             "Liquidity-risk scenario rate (%)",
             round(base_metrics["risk_scenario_rate"], 4),
         ],
-        ["EWI lead window", cfg.ewi_lead_window],
+        ["Fixed EWI lead time before event", cfg.ewi_lead_time],
         ["Support duration after activation", cfg.support_days],
         ["Support start delay after EWI", cfg.support_start_delay],
         ["Support setting (%)", cfg.support_pct],
@@ -865,7 +1157,7 @@ ewi_summary = pd.DataFrame(
 policy_summary = pd.DataFrame(
     [
         {
-            "Policy": "Baseline (no support)",
+            "Policy": "Baseline no support",
             "Support setting (%)": 0.0,
             "Support start delay": np.nan,
             "Support duration": 0,
@@ -900,13 +1192,14 @@ policy_summary = pd.DataFrame(
 # Tabs
 # -----------------------------------------------------------------------------
 
-fig_tab, policy_tab, sensitivity_tab, network_tab, ewi_tab, downloads_tab = st.tabs(
+fig_tab, policy_tab, sensitivity_tab, network_tab, ewi_tab, definitions_tab, downloads_tab = st.tabs(
     [
         "Liquidity routing paths",
         "Policy result",
         "Routing support efficacy",
-        "Impact of Network-size",
-        "Routing capacity EWI quality",
+        "Impact of network size",
+        "EWI quality",
+        "Definitions",
         "Downloads",
     ]
 )
@@ -932,13 +1225,13 @@ with fig_tab:
         (
             axes[0],
             sim["direct_liquidity"],
-            "A. Direct network liquidity routing capacity",
+            "A. Direct network-liquidity routing capacity",
             "darkblue",
         ),
         (
             axes[1],
             sim["indirect_liquidity"],
-            "B. Indirect network liquidity routing capacity",
+            "B. Indirect network-liquidity routing capacity",
             "darkred",
         ),
     ]:
@@ -979,7 +1272,7 @@ with fig_tab:
             color="red",
             linestyle="--",
             linewidth=1.0,
-            label="Q2.5 liquidity-risk day threshold",
+            label="Direct-capacity risk threshold",
         )
 
         y_max = max(
@@ -997,22 +1290,20 @@ with fig_tab:
         ax.set_xlabel("Trading day")
         ax.grid(True, linestyle="--", alpha=0.35)
 
-    axes[0].set_ylabel("Direct network liquidity routing capacity")
+    axes[0].set_ylabel("Direct routing capacity")
     axes[0].legend(fontsize=8, loc="upper right")
 
-    axes[1].set_ylabel("Indirect network liquidity routing capacity")
+    axes[1].set_ylabel("Indirect routing capacity")
     axes[1].legend(fontsize=8, loc="upper right")
 
     fig.tight_layout()
     st.pyplot(fig)
 
     st.caption(
-        "Note: the y-axis starts at the selected investment base."
-        "Average direct and indirect network liquidity routing are calculate over all simulated paths." 
-        "The direct and indirect liquidity-risk routing threshold is set at the 2.5th percentile level over the simulated paths."
-        "A routing risk day occurs when the direct or indirect routing capacity falls below the threshold."
-        "A routing risk scenario occurs when at least one risk day occurs in a simulated path."
-        "The total routing shortfall is the cumulative amount by which the routing capacity falls below the threshold over all risk days."
+        "Note: the y-axis starts at the selected investment base.  \n"
+        "Average direct and indirect network-liquidity routing capacities are calculated "
+        "over all simulated paths. Lower-tail values and the direct-capacity risk threshold "
+        "may fall below the visible range."
     )
 
     liquidity_paths_png = fig_to_png_bytes(fig)
@@ -1041,7 +1332,7 @@ with policy_tab:
         color=colors,
     )
     axes[0].set_title("A. Routing risk scenario rate")
-    axes[0].set_ylabel("% of simualted paths")
+    axes[0].set_ylabel("% of simulated paths")
 
     axes[1].bar(
         plot_df["Policy"],
@@ -1071,7 +1362,7 @@ with policy_tab:
         linewidth=1,
     )
     axes[2].set_title("C. Cumulative routing shortfall")
-    axes[2].set_ylabel("% of no mitigation")
+    axes[2].set_ylabel("% of baseline no support")
 
     for ax in axes:
         ax.tick_params(axis="x", rotation=15)
@@ -1081,6 +1372,11 @@ with policy_tab:
 
     st.pyplot(fig)
     st.dataframe(policy_summary.round(3), use_container_width=True)
+
+    st.caption(
+        "The liquidity-risk threshold is set at the selected lower percentile of "
+        "direct network-liquidity routing capacity over all simulated paths.  \n"
+    )
 
     policy_comparison_png = fig_to_png_bytes(fig)
 
@@ -1114,7 +1410,7 @@ with sensitivity_tab:
                 }
             )
         else:
-            _, pm, extra = run_support_policy(
+            _, _, extra = run_support_policy(
                 sim["direct_lm"],
                 base_metrics,
                 sim["risk_threshold"],
@@ -1159,7 +1455,7 @@ with sensitivity_tab:
     )
 
     ax.set_xlabel("Additional routing-capacity support (%)")
-    ax.set_ylabel("Reduction relative to no mitigation (%)")
+    ax.set_ylabel("Reduction relative to baseline no support (%)")
     ax.set_ylim(0, 100)
     ax.set_xlim(0, max(support_grid))
     ax.grid(True, linestyle="--", alpha=0.4)
@@ -1169,6 +1465,11 @@ with sensitivity_tab:
 
     st.pyplot(fig)
     st.dataframe(support_df.round(3), use_container_width=True)
+
+    st.caption(
+        "This panel keeps the EWI timing, support-start delay, and support duration fixed, "
+        "while varying the size of routing-capacity support."
+    )
 
     support_sensitivity_png = fig_to_png_bytes(fig)
 
@@ -1219,7 +1520,7 @@ with network_tab:
 
         design_n = build_nested_ewi_design(
             sim_n["event_day"],
-            cfg.ewi_lead_window,
+            cfg.ewi_lead_time,
             cfg.seed,
         )
 
@@ -1228,7 +1529,7 @@ with network_tab:
             design_n,
             cfg.target_recall,
             cfg.target_precision,
-            cfg.ewi_lead_window,
+            cfg.ewi_lead_time,
         )
 
         active_n = forward_active_mask(
@@ -1320,7 +1621,7 @@ with ewi_tab:
             design,
             rec,
             prec,
-            cfg.ewi_lead_window,
+            cfg.ewi_lead_time,
         )
 
         active_q = forward_active_mask(
@@ -1345,6 +1646,9 @@ with ewi_tab:
                 "Target recall (%)": rec * 100,
                 "Target precision (%)": prec * 100,
                 "Achieved recall (%)": diag_q["achieved_recall"],
+                "Achieved recall signalable events (%)": diag_q[
+                    "achieved_recall_signalable_events"
+                ],
                 "Achieved precision (%)": diag_q["achieved_precision"],
                 "Signal-day rate (%)": diag_q["signal_day_rate"],
                 "Support setting (%)": 10.0,
@@ -1364,6 +1668,12 @@ with ewi_tab:
 
     st.dataframe(ewi_quality_df.round(3), use_container_width=True)
 
+    st.caption(
+        "Recall is event-based: an event is detected only if an EWI signal occurs exactly "
+        "the fixed lead time before the event. Precision is signal-based: a signal is true "
+        "positive only if a risk event occurs exactly the fixed lead time later."
+    )
+
     st.subheader("Current EWI diagnostics")
     st.dataframe(ewi_summary.round(3), use_container_width=True)
 
@@ -1375,6 +1685,40 @@ with ewi_tab:
     ewi_summary_png = dataframe_to_png_bytes(
         ewi_summary.round(3),
         title="Current EWI diagnostics",
+    )
+
+
+# -----------------------------------------------------------------------------
+# Definitions tab
+# -----------------------------------------------------------------------------
+
+with definitions_tab:
+    st.subheader("Model definitions")
+
+    st.markdown(
+        """
+        This glossary defines the main terms used in the simulation outputs.
+        The definitions are aligned with the implementation in this Streamlit app.
+        """
+    )
+
+    glossary_df = glossary_dataframe()
+
+    st.dataframe(
+        glossary_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.caption(
+        "Note: liquidity-risk events, risk-day reductions, and routing shortfalls are "
+        "defined using direct network-liquidity routing capacity in this version of the app."
+    )
+
+    glossary_png = dataframe_to_png_bytes(
+        glossary_df,
+        title="Model definitions",
+        font_size=7,
     )
 
 
@@ -1392,6 +1736,7 @@ with downloads_tab:
         "Support sensitivity": support_df,
         "Network efficiency": network_df,
         "EWI quality": ewi_quality_df,
+        "Definitions": glossary_dataframe(),
     }
 
     excel_bytes = to_excel_download(all_outputs)
@@ -1441,6 +1786,13 @@ with downloads_tab:
         mime="text/csv",
     )
 
+    st.download_button(
+        "Download definitions (.csv)",
+        data=glossary_dataframe().to_csv(index=False).encode("utf-8"),
+        file_name="model_definitions.csv",
+        mime="text/csv",
+    )
+
     st.divider()
 
     st.subheader("Download figures and tables as PNG")
@@ -1455,6 +1807,7 @@ with downloads_tab:
         "network_size_efficiency_table.png": network_efficiency_table_png,
         "ewi_quality_table.png": ewi_quality_table_png,
         "ewi_summary_table.png": ewi_summary_png,
+        "model_definitions_table.png": glossary_png,
     }
 
     col_a, col_b, col_c = st.columns(3)
@@ -1519,9 +1872,9 @@ with downloads_tab:
         )
 
         st.download_button(
-            "Download EWI diagnostics table PNG",
-            data=ewi_summary_png,
-            file_name="ewi_summary_table.png",
+            "Download definitions table PNG",
+            data=glossary_png,
+            file_name="model_definitions_table.png",
             mime="image/png",
         )
 
@@ -1536,9 +1889,11 @@ with downloads_tab:
 
 
 st.info(
-    "Interpretation note: the policy channel is implemented as additional "
-    "routing-capacity support after an estimated-EWI signal. Policy support starts "
+    "Interpretation note: the EWI signal is implemented as a fixed-lead signal "
+    f"{cfg.ewi_lead_time} trading day(s) before a direct-capacity liquidity-risk event. "
+    "Policy support starts "
     f"{cfg.support_start_delay} trading day(s) after the signal and remains active "
-    f"for {cfg.support_days} trading day(s). The topology exponent paths are drawn "
-    "from fallback shifted-lognormal parameters."
+    f"for {cfg.support_days} trading day(s). Liquidity-risk events and policy effects "
+    "are evaluated using direct network-liquidity routing capacity. The topology "
+    "exponent paths are drawn from fallback lognormal parameters."
 )
