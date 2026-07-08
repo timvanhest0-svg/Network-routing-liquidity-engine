@@ -743,29 +743,63 @@ GLOSSARY_ROWS = [
             "Realized policy support relative to baseline available capacity across all scenario-days. "
             "It accounts for both the support size and how often support is active."
         ),
-        "Formula / implementation": "support.sum() / (baseline_available * number_of_scenario_days)",
+        "Formula / implementation": "sum of support / (baseline_available * number_of_scenario_days)",
     },
     {
-        "Term": "Risk-day reduction",
-        "Definition": (
-            "Percentage reduction in the number of liquidity-risk days relative to the baseline "
-            "no-support case."
-        ),
-        "Formula / implementation": "(baseline_risk_days - policy_risk_days) / baseline_risk_days",
-    },
-    {
-        "Term": "Shortfall reduction",
-        "Definition": (
-            "Percentage reduction in cumulative routing shortfall relative to the baseline no-support case."
-        ),
-        "Formula / implementation": "(baseline_shortfall - policy_shortfall) / baseline_shortfall",
-    },
-    {
-        "Term": "Mitigation efficiency",
-        "Definition": (
-            "Shortfall reduction achieved per one percentage point of realized policy support intensity."
-        ),
-        "Formula / implementation": "shortfall_reduction_pct / support_intensity_pct",
+{
+    "Term": "Risk-day reduction",
+    "Definition": (
+        "Percentage reduction in the number of liquidity-risk days relative to the "
+        "baseline no-support case. A positive value means that policy support reduces "
+        "the number of risk days; a negative value means that risk days increase."
+    ),
+    "Formula / implementation": (
+        "(baseline_risk_days - policy_risk_days) / baseline_risk_days * 100"
+    ),
+},
+{
+    "Term": "Shortfall reduction",
+    "Definition": (
+        "Percentage reduction in cumulative routing shortfall relative to the baseline "
+        "no-support case. This captures how much the policy reduces the depth of "
+        "liquidity stress, even when some risk days remain."
+    ),
+    "Formula / implementation": (
+        "(baseline_shortfall - policy_shortfall) / baseline_shortfall * 100"
+    ),
+},
+{
+    "Term": "Mitigation efficiency",
+    "Definition": (
+        "Shortfall reduction achieved per percentage point of realized policy support "
+        "intensity. Higher values indicate that a given amount of realized support "
+        "produces a larger reduction in cumulative routing shortfall."
+    ),
+    "Formula / implementation": (
+        "shortfall_reduction_pct / support_intensity_pct"
+    ),
+},
+{
+    "Term": "Evaluable event days",
+    "Definition": (
+        "Liquidity-risk event days that occur late enough in the simulated path "
+        "to evaluate whether an EWI signal occurred exactly the fixed lead time earlier."
+    ),
+    "Formula / implementation": (
+        "n/a"
+    ),
+},
+{
+    "Term": "Signalable event days",
+    "Definition": (
+        "Evaluable event days for which the fixed-lead signal day exists and is not "
+        "itself already a liquidity-risk day. These are the events for which a clean "
+        "early-warning signal can be placed."
+    ),
+    "Formula / implementation": (
+        "n/a"
+    ),
+},
     },
 ]
 
@@ -940,9 +974,9 @@ with st.expander("Model definitions and timing interpretation", expanded=False):
         This app separates the **warning system** from the **policy response**.
 
         - The **fixed EWI lead time** determines when a valid warning signal is placed before a liquidity-risk event.  
-          For example, with a lead time of X trading days, an event on day *t* has a true signal on day *t - X*.
+          For example, with a lead time of 5 trading days, an event on day *t* has a true signal on day *t - 5*.
         - The **support-start delay** determines when policy support becomes active after an EWI signal.  
-          If the support-start delay is Y trading days, support starts on day *t + Y*.
+          If the support-start delay is 3 trading days, support starts on day *t + 3*.
         - A **liquidity-risk day** is defined using **direct network-liquidity routing capacity**.  
           Indirect routing capacity is shown for comparison but does not trigger the risk indicator in this version.
         - **Recall** is event-based: it measures how many event days are detected.
@@ -1304,9 +1338,6 @@ policy_summary = pd.DataFrame(
     [
         {
             "Policy": "Baseline no support",
-            "Support setting (%)": 0.0,
-            "Support start delay": np.nan,
-            "Support duration": 0,
             "Policy support intensity (%)": 0.0,
             "Liquidity-risk scenario rate (%)": base_metrics["risk_scenario_rate"],
             "Liquidity-risk day rate (%)": base_metrics["risk_day_rate"],
@@ -1317,9 +1348,6 @@ policy_summary = pd.DataFrame(
         },
         {
             "Policy": "Routing-capacity support",
-            "Support setting (%)": cfg.support_pct,
-            "Support start delay": cfg.support_start_delay,
-            "Support duration": cfg.support_days,
             "Policy support intensity (%)": policy_extra["support_intensity_pct"],
             "Liquidity-risk scenario rate (%)": policy_metrics[
                 "risk_scenario_rate"
@@ -1790,20 +1818,10 @@ with ewi_tab:
             {
                 "EWI setting": label,
                 "Target recall (%)": rec * 100,
-                "Target precision (%)": prec * 100,
                 "Achieved recall (%)": diag_q["achieved_recall"],
-                "Achieved recall signalable events (%)": diag_q[
-                    "achieved_recall_signalable_events"
-                ],
+                "Target precision (%)": prec * 100,
                 "Achieved precision (%)": diag_q["achieved_precision"],
-                "Signal-day rate (%)": diag_q["signal_day_rate"],
-                "Support setting (%)": 10.0,
-                "Support start delay": cfg.support_start_delay,
-                "Support duration": cfg.support_days,
-                "Policy support intensity (%)": extra_q[
-                    "support_intensity_pct"
-                ],
-                "Policy risk-day rate (%)": pm_q["risk_day_rate"],
+                "Policy support intensity (%)": extra_q["support_intensity_pct"],
                 "Risk-day reduction (%)": extra_q["risk_reduction_pct"],
                 "Shortfall reduction (%)": extra_q["shortfall_reduction_pct"],
                 "Mitigation efficiency": extra_q["mitigation_efficiency"],
@@ -1815,7 +1833,7 @@ with ewi_tab:
     st.dataframe(ewi_quality_df.round(3), use_container_width=True)
 
     st.caption(
-        "Recall is event-based: an event is detected only if an EWI signal occurs exactly "
+        "Recall is event-based: an event is detected only if an EWI signal occurs"
         "the fixed lead time before the event. Precision is signal-based: a signal is true "
         "positive only if a risk event occurs exactly the fixed lead time later."
     )
