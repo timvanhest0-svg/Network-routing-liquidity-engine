@@ -1,0 +1,15 @@
+column,explanation
+day,Trading day index from 1 to T.
+gamma,Drawn topology tail-exponent value controlling the degree distribution.
+direct_liquidity_multiplier_E_k,"Direct liquidity multiplier, equal to expected degree E[k]."
+indirect_liquidity_multiplier_E_k2_over_E_k_minus_1,"Indirect multiplier, equal to E[k^2] / E[k] - 1."
+baseline_direct_liquidity,Direct routing capacity without EWI-triggered policy support.
+baseline_indirect_liquidity,Indirect routing capacity without EWI-triggered policy support.
+liquidity_risk_threshold,Lower-tail threshold used to identify liquidity-risk days.
+liquidity_risk_day,True when baseline direct routing capacity falls below the threshold.
+ewi_signal,True when the estimated EWI emits a fixed-lead signal.
+support_active,True when combined routing-capacity support is active.
+support_amount,Additional routing-capacity support while support is active.
+policy_direct_liquidity,Direct routing capacity after combined EWI-triggered support.
+baseline_shortfall,Shortfall of baseline direct routing capacity below the risk threshold.
+policy_shortfall,Shortfall of policy direct routing capacity below the risk threshold.
