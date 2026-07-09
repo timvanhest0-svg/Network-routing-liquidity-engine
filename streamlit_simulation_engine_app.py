@@ -617,9 +617,9 @@ def png_zip_download(png_files: dict) -> bytes:
 
 GLOSSARY_ROWS = [
     {
-        "Term": "Investment base",
+        "Term": "Investment amount and base",
         "Definition": "Reference amount used to scale available routing capacity and policy support.",
-        "Formula / implementation": "investment",
+        "Formula / implementation": "Investment amount at each node, defaulting to 100",
     },
     {
         "Term": "Baseline available liquidity",
@@ -1307,15 +1307,16 @@ simulation_summary = pd.DataFrame(
         ["Total scenario-days", cfg.scenarios * cfg.trading_days],
         ["Investment base", cfg.investment],
         ["Normal buffer / unavailable liquidity (%)", cfg.buffer_normal_pct],
+        ["Target recall (%)", rec * 100],
+        ["Achieved recall (%)", diag_q["achieved_recall"]],
+        ["Target precision (%)", prec * 100],
+        ["Achieved precision (%)", diag_q["achieved_precision"]],
         ["Liquidity-risk threshold quantile", cfg.liquidity_risk_q],
-        ["Liquidity-risk threshold", round(sim["risk_threshold"], 4)],
+        ["Liquidity-risk threshold", round(sim["risk_threshold"], 2)],
         ["Liquidity-risk days", base_metrics["risk_days"]],
-        ["Liquidity-risk day rate (%)", round(base_metrics["risk_day_rate"], 4)],
+        ["Liquidity-risk day rate (%)", round(base_metrics["risk_day_rate"], 2)],
         ["Liquidity-risk scenarios", base_metrics["risk_scenarios"]],
-        [
-            "Liquidity-risk scenario rate (%)",
-            round(base_metrics["risk_scenario_rate"], 4),
-        ],
+        ["Liquidity-risk scenario rate (%)",round(base_metrics["risk_scenario_rate"], 2),],
         ["Fixed EWI lead time before event", cfg.ewi_lead_time],
         ["Support duration after activation", cfg.support_days],
         ["Support start delay after EWI", cfg.support_start_delay],
@@ -1336,25 +1337,19 @@ policy_summary = pd.DataFrame(
     [
         {
             "Policy": "Baseline no support",
-            "Policy support intensity (%)": 0.0,
             "Liquidity-risk scenario rate (%)": base_metrics["risk_scenario_rate"],
             "Liquidity-risk day rate (%)": base_metrics["risk_day_rate"],
             "Total routing shortfall": base_metrics["total_shortfall"],
             "Risk-day reduction (%)": 0.0,
             "Shortfall reduction (%)": 0.0,
-            "Mitigation efficiency": np.nan,
         },
         {
             "Policy": "Routing-capacity support",
-            "Policy support intensity (%)": policy_extra["support_intensity_pct"],
-            "Liquidity-risk scenario rate (%)": policy_metrics[
-                "risk_scenario_rate"
-            ],
-            "Liquidity-risk day rate (%)": policy_metrics["risk_day_rate"],
-            "Total routing shortfall": policy_metrics["total_shortfall"],
-            "Risk-day reduction (%)": policy_extra["risk_reduction_pct"],
-            "Shortfall reduction (%)": policy_extra["shortfall_reduction_pct"],
-            "Mitigation efficiency": policy_extra["mitigation_efficiency"],
+            "Liquidity-risk scenario rate (%)": policy_metrics["risk_scenario_rate"],
+            "Liquidity-risk day rate (%)": round(policy_metrics["risk_day_rate"],2),
+            "Total routing shortfall": round(policy_metrics["total_shortfall"],0),
+            "Risk-day reduction (%)": round(policy_extra["risk_reduction_pct"],2),
+            "Shortfall reduction (%)": round(policy_extra["shortfall_reduction_pct"],2),
         },
     ]
 )
@@ -1367,8 +1362,8 @@ policy_summary = pd.DataFrame(
 fig_tab, policy_tab, sensitivity_tab, network_tab, ewi_tab, definitions_tab, downloads_tab = st.tabs(
     [
         "Liquidity routing paths",
-        "Policy result",
-        "Routing support efficacy",
+        "Mitigation result",
+        "Routing support impact",
         "Impact of network size",
         "EWI quality",
         "Definitions",
@@ -1482,11 +1477,11 @@ with fig_tab:
 
 
 # -----------------------------------------------------------------------------
-# Policy result tab
+# Mitigation result tab
 # -----------------------------------------------------------------------------
 
 with policy_tab:
-    st.subheader("Policy comparison")
+    st.subheader("Mitigation impact comparison")
 
     plot_df = policy_summary.copy()
 
@@ -1498,43 +1493,73 @@ with policy_tab:
 
     colors = ["#333333", "#2e7d32"]
 
-    axes[0].bar(
-        plot_df["Policy"],
-        plot_df["Liquidity-risk scenario rate (%)"],
-        color=colors,
-    )
+    bars = axes[0].bar(
+    plot_df["Policy"],
+    plot_df["Liquidity-risk scenario rate (%)"],
+    color=colors,
+    edgecolor="black",
+    linewidth=0.5,)
+    
+    axes[0].bar_label(
+    bars,
+    labels=[f"{v:.1f}%" for v in plot_df["Liquidity-risk scenario rate (%)"]],
+    padding=3,
+    fontsize=9,)
+    axes[0].set_ylabel("Liquidity-risk scenario rate (%)")
     axes[0].set_title("A. Routing risk scenario rate")
-    axes[0].set_ylabel("% of simulated paths")
-
-    axes[1].bar(
-        plot_df["Policy"],
-        plot_df["Liquidity-risk day rate (%)"],
-        color=colors,
-    )
+    max_a = plot_df["Liquidity-risk day rate (%)"].max()
+    axes[0].set_ylim(0, max_a * 1.15)
+    
+    # Panel B: Routing risk-day rate
+    bars_b = axes[1].bar(
+    plot_df["Policy"],
+    plot_df["Liquidity-risk day rate (%)"],
+    color=colors,
+    edgecolor="black",
+    linewidth=0.5,)
+    
+    axes[1].bar_label(
+    bars_b,
+    labels=[f"{v:.1f}%" for v in plot_df["Liquidity-risk day rate (%)"]],
+    padding=3,
+    fontsize=9,)
+    
     axes[1].set_title("B. Routing risk-day rate")
     axes[1].set_ylabel("% of trading days")
-
+    max_b = plot_df["Liquidity-risk day rate (%)"].max()
+    axes[1].set_ylim(0, max_b * 1.15)
+    
+    # Panel C: Cumulative routing shortfall
     denom = plot_df.loc[0, "Total routing shortfall"]
-
     shortfall_pct = (
-        plot_df["Total routing shortfall"] / denom * 100
-        if denom
-        else np.nan
-    )
-
-    axes[2].bar(
-        plot_df["Policy"],
-        shortfall_pct,
-        color=colors,
-    )
+    plot_df["Total routing shortfall"] / denom * 100
+    if denom
+    else np.nan)
+    
+    bars_c = axes[2].bar(
+    plot_df["Policy"],
+    shortfall_pct,
+    color=colors,
+    edgecolor="black",
+    linewidth=0.5,)
+    
+    axes[2].bar_label(
+    bars_c,
+    labels=[f"{v:.1f}%" for v in shortfall_pct],
+    padding=3,
+    fontsize=9,)
+    
     axes[2].axhline(
-        100,
-        color="grey",
-        linestyle="--",
-        linewidth=1,
-    )
+    100,
+    color="grey",
+    linestyle="--",
+    linewidth=1,)
+    
     axes[2].set_title("C. Cumulative routing shortfall")
     axes[2].set_ylabel("% of baseline no support")
+    
+    max_c = np.nanmax(shortfall_pct)
+    axes[2].set_ylim(0, max_c * 1.15)
 
     for ax in axes:
         ax.tick_params(axis="x", rotation=15)
@@ -1816,9 +1841,7 @@ with ewi_tab:
             {
                 "EWI setting": label,
                 "Target recall (%)": rec * 100,
-                "Achieved recall (%)": diag_q["achieved_recall"],
                 "Target precision (%)": prec * 100,
-                "Achieved precision (%)": diag_q["achieved_precision"],
                 "Policy support intensity (%)": extra_q["support_intensity_pct"],
                 "Risk-day reduction (%)": extra_q["risk_reduction_pct"],
                 "Shortfall reduction (%)": extra_q["shortfall_reduction_pct"],
@@ -1865,24 +1888,8 @@ with definitions_tab:
     )
 
     glossary_df = glossary_dataframe()
-
-    view_mode = st.radio(
-        "Definition view",
-        options=["Wrapped table", "Searchable cards"],
-        horizontal=True,
-        help=(
-            "Use the wrapped table for an overview. Use searchable cards when you want "
-            "to inspect one definition at a time."
-        ),
-    )
-
-    if view_mode == "Wrapped table":
-        render_wrapped_glossary_table(
-            glossary_df,
-            max_height=620,
-        )
-    else:
-        render_glossary_cards(glossary_df)
+    
+    render_glossary_cards(glossary_df)
 
     st.caption(
         "Note: liquidity-risk events, risk-day reductions, and routing shortfalls are "
