@@ -1,0 +1,13 @@
+Term,Definition,Formula / implementation
+Direct routing capacity,Network-liquidity capacity based on E[k]. This measure defines liquidity-risk events.,direct_liquidity = baseline_available * direct_lm
+Indirect routing capacity,Network-liquidity capacity based on E[k^2] / E[k] - 1. It is shown for comparison only.,indirect_liquidity = baseline_available * indirect_lm
+Liquidity-risk day,A scenario-day on which direct routing capacity falls below the liquidity-risk threshold.,direct_liquidity < risk_threshold
+Liquidity-risk scenario,A simulated path with at least one liquidity-risk day.,risk.any(axis=1)
+Fixed EWI lead time,Number of trading days before a liquidity-risk event at which a true EWI signal is placed.,signal_day = event_day - ewi_lead_time
+Target recall,Intended percentage of evaluable liquidity-risk event days that receive a true EWI signal.,target_recall * evaluable_event_days
+Target precision,Intended percentage of EWI signal days that should be true positives.,true_positive_signals / total_signals
+Policy support intensity,Realized support relative to baseline available capacity across all scenario-days.,sum of support / (baseline_available * scenario_days)
+Risk-day reduction,Percentage reduction in liquidity-risk days relative to baseline no support.,(baseline_risk_days - policy_risk_days) / baseline_risk_days * 100
+Shortfall reduction,Percentage reduction in cumulative routing shortfall relative to baseline no support.,(baseline_shortfall - policy_shortfall) / baseline_shortfall * 100
+Mitigation efficiency,Shortfall reduction per percentage point of realized support intensity.,shortfall_reduction_pct / support_intensity_pct
+EWI targeting value-added,Difference between EWI-triggered risk-day reduction and untargeted risk-day reduction at the same support intensity.,EWI risk-day reduction - random benchmark risk-day reduction
