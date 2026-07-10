@@ -38,7 +38,7 @@ streamlit run streamlit_simulation_engine_app.py
 The app opens a browser-based interface titled:
 
 ```text
-Streamlit:  [https://network-routing-liquidity-engine-xvl9lfdpbnneamxqyxpmtb.streamlit.app/]
+Streamlit:  (https://network-routing-liquidity-engine-xvl9lfdpbnneamxqyxpmtb.streamlit.app/)
 ```
 
 ## Repository structure
