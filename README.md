@@ -280,20 +280,104 @@ The app also supports downloads of figures and tables as PNG files and tabular o
 A S=1 test is provided in:
 
 ```text
-examples/S1
+examples S1
 ```
 
 The purpose of the S=1 test is to verify that the app runs successfully under a minimal example configuration. 
 
 The test uses a single-scenario example, `S = 1`, to explain and confirm that the main simulation workflow runs without errors and that the interface elements are generated correctly.
 
-### Test procedure
+## examples S1
+
+This folder contains the minimal S=1 test for the Network Routing Liquidity Engine to explain the simulation workflow.
+
+## Purpose
+
+The purpose of this S=1 test is to explain the simulation outcome with an S=1 example. 
+It is not a validation of the model assumptions.
+
+## Test configuration
+
+Minimal S=1-test setting:
+
+| Parameter | Value |
+|---|---:|
+| Simulation scenarios | 1 |
+| Network size | 24 |
+| Trading days | 200 |
+| Investment amount | 100 |
+| Buffer | 40 |
+| Liquidity risk threshold | 2.5 |
+| Random seed | 42 |
+| Target recall | 70 |
+| Target precision | 25 |
+| Fixed EWI lead time | 5 |
+| Support start delay | 5 |
+| Support duration | 10 |
+| Support intensity | 10% |
+| Lognorm sigma | 0.32 |
+| Lognorm location | 0.0 |
+| Lognorm scale | 1.09 |
+
+## Run command
+
+From the repository root:
+
+```bash
+Python: run test_s1_default.py
+```
+Then verify that:
+
+1. the S=1 simulation script completes;
+2. the s1_default_data_dictionary.csv is produced and similar to the example S1 file
+3. the s1_default_overview_outcome.png is produced and similar to the example S1 file
+4. the s1_default_parameters.csv is produced and similar to the example S1 file
+5. the s1_default_path.csv is produced and similar to the example S1 file
+6. the s1_default_summary.csv is produced and similar to the example S1 file
+7. the example S1 files can be used in combination with the model_definitions.csv to understand the simulation workflow
+
+
+## Streamlit-app test
+
+A streamlit-app test is provided in:
+
+```text
+examples/streamlit app
+```
+
+The purpose of the streamlit-app test is to verify that the app runs successfully under a minimal example configuration. 
+
+### Test procedure app
 
 From the repository root, run:
 
 ```bash
 streamlit run streamlit_simulation_engine_app.py
 ```
+
+## Test configuration
+
+Default streamlit app-test setting:
+
+| Parameter | Value |
+|---|---:|
+| Simulation scenarios | 1000 |
+| Network size | 24 |
+| Trading days | 200 |
+| Investment amount | 100 |
+| Buffer | 40 |
+| Liquidity risk threshold | 2.5 |
+| Random seed | 42 |
+| Target recall | 70 |
+| Target precision | 25 |
+| Fixed EWI lead time | 5 |
+| Support start delay | 5 |
+| Support duration | 10 |
+| Support intensity | 10% |
+| Lognorm sigma | 0.32 |
+| Lognorm location | 0.0 |
+| Lognorm scale | 1.09 |
+
 
 Then verify that:
 
@@ -305,64 +389,10 @@ Then verify that:
 6. the definitions tab is visible;
 7. the downloads tab is available;
 8. the app can generate downloadable output files;
-9. the `examples/S1` materials can be used to reproduce the minimal S1-test configuration.
+9. the `chapter 8 figures/` materials can be used to reproduce the streamlit-app configuration with outcomes.
 
-The S=1 test is not intended to validate every scientific assumption in the model. It is a minimal execution check to confirm that the computational workflow is operational.
+The streamlit-app test is not intended to validate every scientific assumption in the model. It is a minimal execution check to confirm that the computational workflow is operational. The app supports reproducibility by making the random seed and model parameters explicit. The main simulation assumptions are visible through the interface and through the definitions tab.
 
-## CODECHECK guidance
-
-This repository is designed to support independent reproducibility review.
-
-For CODECHECK purposes, reviewers should be able to:
-
-1. clone the repository;
-2. install the dependencies from `requirements.txt`;
-3. launch the app with `streamlit run streamlit_simulation_engine_app.py`;
-4. reproduce the smoke test in `examples/S1`;
-5. inspect the parameter settings in the sidebar;
-6. download the generated tables and figures;
-7. compare the smoke-test outputs with the documented expected behaviour.
-
-The app supports reproducibility by making the random seed and model parameters explicit. The main simulation assumptions are visible through the interface and through the definitions tab.
-
-
-## examples S1
-
-This folder contains the minimal S=1 test for the Network Routing Liquidity Engine.
-
-## Purpose
-
-The purpose of this S=1 test is to verify the main simulation workflow and explain the outcome with an S=1 example. 
-It is not a full validation of the model assumptions.
-
-## Test configuration
-
-Minimal S=1-test setting:
-
-| Parameter | Value |
-|---|---:|
-| Simulation scenarios | 1 |
-| Network size | 24 |
-| Trading days | 200 |
-| Random seed | 42 |
-| Fixed EWI lead time | 5 |
-| Support start delay | 5 |
-| Support duration | 10 |
-| Support intensity | 10% |
-
-## Run command
-
-From the repository root:
-
-```bash
-Python: run test_s1_default.py
-```
-
-
-## Notes
-
-Because the app uses a fixed random seed, repeated runs with the same settings should reproduce the same outputs.
-```
 
 ## Citation
 
