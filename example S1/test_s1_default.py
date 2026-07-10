@@ -3,7 +3,7 @@ S=1 default demonstration for the Network Liquidity Routing Engine
 =================================================================
 
 This script runs one reproducible single-path demonstration of the engine
-mechanics and writes GitHub-friendly outputs:
+mechanics:
 
 - s1_default_parameters.csv
 - s1_default_path.csv
@@ -48,9 +48,9 @@ INVESTMENT = 100.0
 SEED = 42
 
 # Fallback 2010-2018 lognormal parameters for gamma draws.
-GAMMA_SHAPE = 0.3190514240176254
+GAMMA_SHAPE = 0.32
 GAMMA_LOC = 0.0
-GAMMA_SCALE = 1.0899155671153902
+GAMMA_SCALE = 1.09
 
 LIQUIDITY_RISK_Q = 0.025
 BUFFER_NORMAL = 40.0
