@@ -47,7 +47,7 @@ T = 200
 INVESTMENT = 100.0
 SEED = 42
 
-# Fallback 2010-2018 lognormal parameters for gamma draws.
+# 2010-2018 lognormal parameters for gamma draws.
 GAMMA_SHAPE = 0.32
 GAMMA_LOC = 0.0
 GAMMA_SCALE = 1.09

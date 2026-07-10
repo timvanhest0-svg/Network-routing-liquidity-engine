@@ -4,9 +4,9 @@ S,1.0,Number of simulated scenarios. S=1 is a documentation and smoke-test run.
 T,200.0,Number of trading days in the simulated path.
 INVESTMENT,100.0,Fixed investment base used to scale routing capacity.
 SEED,42.0,Random seed for reproducibility.
-GAMMA_SHAPE,0.3190514240176254,Shape parameter of the fallback lognormal gamma distribution.
+GAMMA_SHAPE,0.32,Shape parameter of the fallback lognormal gamma distribution.
 GAMMA_LOC,0.0,Location parameter of the fallback lognormal gamma distribution.
-GAMMA_SCALE,1.0899155671153902,Scale parameter of the fallback lognormal gamma distribution.
+GAMMA_SCALE,1.09,Scale parameter of the fallback lognormal gamma distribution.
 LIQUIDITY_RISK_Q,0.025,Quantile used to define the lower-tail liquidity-risk threshold.
 BUFFER_NORMAL,40.0,Percentage of investment unavailable in the no-mitigation baseline.
 TARGET_RECALL,0.7,Target share of evaluable liquidity-risk days detected by the EWI.
