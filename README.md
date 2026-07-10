@@ -205,9 +205,9 @@ The default simulation configuration is:
 | Support duration | 10 trading days |
 | Support start delay | 5 trading days |
 | Support intensity | 10% |
-| Lognormal sigma | 0.3191 |
+| Lognormal sigma | 0.32 |
 | Lognormal location shift | 0.0 |
-| Lognormal scale | 1.0899 |
+| Lognormal scale | 1.09 |
 
 ## Key definitions
 
