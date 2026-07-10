@@ -298,26 +298,8 @@ It is not a validation of the model assumptions.
 
 ## Test configuration
 
-Minimal S=1-test setting:
-
-| Parameter | Value |
-|---|---:|
-| Simulation scenarios | 1 |
-| Network size | 24 |
-| Trading days | 200 |
-| Investment amount | 100 |
-| Buffer | 40 |
-| Liquidity risk threshold | 2.5 |
-| Random seed | 42 |
-| Target recall | 70 |
-| Target precision | 25 |
-| Fixed EWI lead time | 5 |
-| Support start delay | 5 |
-| Support duration | 10 |
-| Support intensity | 10% |
-| Lognorm sigma | 0.32 |
-| Lognorm location | 0.0 |
-| Lognorm scale | 1.09 |
+Minimal S=1-test setting are set in the script conform the default simulation settings as mentioned above with S=1.
+Seed = 42
 
 ## Run command
 
