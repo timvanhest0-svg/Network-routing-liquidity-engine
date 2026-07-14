@@ -149,16 +149,20 @@ Using the same parameter settings and the same random seed should reproduce the 
 
 ## Model interpretation
 
-The app separates three concepts:
+The app separates three related but distinct concepts:
 
 1. **Liquidity-risk event**  
-   A scenario-day on which direct routing capacity falls below the liquidity-risk threshold.
+   A scenario-day on which direct routing capacity falls below the liquidity-risk threshold. Consecutive scenario-days below the threshold are counted as separate liquidity-risk event days in the current implementation.
 
 2. **EWI signal day**  
-   A warning signal placed a fixed number of trading days before a liquidity-risk event.
+   A day on which the early-warning indicator issues a signal. For a true-positive signal, the signal is placed a fixed number of trading days before an evaluable liquidity-risk event. The EWI module is a performance-controlled signal emulator: the user specifies target recall, target precision, and lead time to examine the conditional value of warning quality. It does not re-estimate or independently validate the empirical EWI model.
 
 3. **Policy support day**  
-   A day on which routing-capacity support is active after the configured support-start delay.
+   A day on which additional routing-capacity support is active. Support begins after the configured support-start delay, measured from the EWI signal day, and remains active for the configured support duration.
+
+The **EWI lead time** and **support-start delay** therefore represent different intervals. Lead time measures how far the warning precedes the associated liquidity-risk event; support-start delay measures how long implementation takes after the warning. Depending on their relative values, support may begin before, on, or after the expected event day.
+
+False-positive signals are not directly assigned a separate penalty in the current implementation. Lower target precision can therefore increase the frequency of policy activation and may improve raw liquidity outcomes simply because more support is deployed. Policy results should consequently be evaluated together with realized recall, realized precision, support-day frequency, total or average support deployed, and mitigation-efficiency measures.
 
 This timing distinction is important. A correct EWI does not automatically imply immediate support. Support starts only after the configured implementation delay.
 
